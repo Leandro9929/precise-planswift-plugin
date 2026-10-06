@@ -1,0 +1,20 @@
+{
+  "name": "precise-page-renamer",
+  "version": "2.3.0",
+  "private": true,
+  "description": "Local title-block OCR and reviewed PlanSwift page renaming",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test --test-concurrency=1 test/naming.test.js test/plan.test.js test/ocr.test.js test/bridge.test.js test/server.test.js",
+    "test:bridge": "node --test test/bridge.test.js",
+    "release": "node scripts/build-release.js"
+  },
+  "dependencies": {
+    "sharp": "^0.35.5",
+    "tesseract.js": "^7.0.0"
+  }
+}

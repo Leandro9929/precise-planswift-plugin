@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Precise Page Renamer</title>
+<link rel="stylesheet" href="/style.css?token=__TOKEN__">
+</head>
+<body>
+<header>
+  <div>
+    <h1>Precise Page Renamer</h1>
+    <small>Local OCR · Review first · PlanSwift</small>
+  </div>
+  <div class="header-actions">
+    <span id="jobName">Loading job…</span>
+    <button id="refresh" type="button">Reload job</button>
+    <button id="diagBtn" type="button">Check PlanSwift connection</button>
+    <button id="settingsBtn" type="button">Settings</button>
+  </div>
+</header>
+
+<main>
+  <section class="panel" id="sheetsPanel">
+    <h2>1. Choose sheets</h2>
+    <div class="toolbar">
+      <button id="selectAll" type="button">Select all</button>
+      <button id="selectNone" type="button">Select none</button>
+      <input id="pageFilter" type="search" placeholder="Filter pages" aria-label="Filter pages">
+      <b id="selectedCount"></b>
+    </div>
+    <div class="list" id="pageList" role="listbox" aria-label="Pages in the open job"></div>
+  </section>
+
+  <section class="panel" id="previewPanel">
+    <h2>2. How to read sheet numbers and titles</h2>
+    <div class="modes" role="radiogroup" aria-label="Reading mode">
+      <label><input type="radio" name="mode" value="auto" checked> <b>Find automatically</b> <span class="muted">on every sheet (any title block layout)</span></label>
+      <label><input type="radio" name="mode" value="zones"> <b>Use boxes</b> <span class="muted">drawn once and applied to every selected sheet (fast, same layout)</span></label>
+    </div>
+    <div class="toolbar">
+      <button id="detectBtn" type="button" title="Find the sheet number and title on this sheet">Find on this sheet</button>
+      <span class="sep"></span>
+      <button id="numberBtn" type="button" class="tool active">Draw sheet number box</button>
+      <button id="titleBtn" type="button" class="tool">Draw title box</button>
+      <button id="clearBtn" type="button">Clear boxes</button>
+      <span class="sep"></span>
+      <label class="inline">Zoom <select id="zoom"><option value="1">Fit</option><option value="2">2×</option><option value="3">3×</option><option value="5">5×</option></select></label>
+      <span id="currentPage" class="muted"></span>
+    </div>
+    <div class="viewer" id="viewer">
+      <div class="stage" id="stage">
+        <img id="planImage" alt="Selected plan sheet" draggable="false">
+        <div class="box number" id="numberBox" hidden></div>
+        <div class="box title" id="titleBox" hidden></div>
+        <div class="box draft" id="draftBox" hidden></div>
+      </div>
+    </div>
+    <div class="status" id="zoneStatus" role="status">Red box = sheet number, blue box = sheet title.</div>
+    <div class="naming">
+      <label>Page name format
+        <select id="template">
+          <option value="number-title">A1.1 - FLOOR PLAN</option>
+          <option value="number-space-title">A1.1 FLOOR PLAN</option>
+          <option value="number">A1.1 (number only)</option>
+          <option value="title">FLOOR PLAN (title only)</option>
+        </select>
+      </label>
+      <label>Title letters
+        <select id="titleCase">
+          <option value="asis">As printed</option>
+          <option value="title">Title Case</option>
+          <option value="upper">UPPERCASE</option>
+        </select>
+      </label>
+      <label class="check" id="fallbackWrap"><input type="checkbox" id="autoFallback" checked> If a box misses on a sheet, search that sheet automatically</label>
+    </div>
+    <div class="toolbar">
+      <button id="scanBtn" type="button" class="primary">Read selected sheets</button>
+      <button id="cancelScan" type="button" hidden>Cancel</button>
+      <progress id="scanProgress" max="1" value="0" hidden></progress>
+      <span id="scanStatus" class="muted">OCR runs on this PC. Nothing is uploaded.</span>
+    </div>
+  </section>
+
+  <section class="panel wide" id="reviewPanel" hidden>
+    <h2>3. Review and correct names, then apply</h2>
+    <p class="muted">Edit the sheet number, title or the full name. Only checked rows are renamed. Rows with warnings start unchecked.</p>
+    <div class="toolbar">
+      <label class="inline">Show
+        <select id="rowFilter">
+          <option value="all">All rows</option>
+          <option value="review">Needs review</option>
+          <option value="ready">Checked</option>
+          <option value="unchanged">Unchanged</option>
+        </select>
+      </label>
+      <button id="checkReady" type="button">Check rows without warnings</button>
+      <button id="uncheckAll" type="button">Uncheck all</button>
+      <span class="sep"></span>
+      <button id="csvBtn" type="button">Export CSV</button>
+      <label class="button" for="csvFile">Import CSV</label>
+      <input id="csvFile" type="file" accept=".csv,text/csv" hidden>
+    </div>
+    <div class="summary" id="summary" role="status"></div>
+    <div id="reviewWrap">
+      <table>
+        <thead>
+          <tr><th>Apply</th><th>#</th><th>Current page name</th><th>Sheet #</th><th>Title</th><th>New PlanSwift name</th><th>Read from sheet</th><th>Check</th></tr>
+        </thead>
+        <tbody id="results"></tbody>
+      </table>
+    </div>
+    <div class="toolbar footer-actions">
+      <button id="applyBtn" type="button" class="danger">Rename checked pages in PlanSwift</button>
+      <span class="status" id="applyStatus" role="status"></span>
+    </div>
+  </section>
+
+  <section class="panel wide" id="historyPanel">
+    <h2>4. History and restore</h2>
+    <p class="muted">Every rename is journaled on this PC. Undo a run, or put every page this tool renamed back to its original name. Pages renamed in PlanSwift afterwards are left alone.</p>
+    <div class="toolbar">
+      <button id="restoreAll" type="button">Restore original names…</button>
+      <button id="historyRefresh" type="button">Refresh</button>
+      <span id="historyInfo" class="muted"></span>
+    </div>
+    <div id="historyList"></div>
+  </section>
+</main>
+
+<dialog id="dialog">
+  <form method="dialog" id="dialogForm">
+    <h2 id="dialogTitle"></h2>
+    <div id="dialogBody"></div>
+    <div class="toolbar dialog-actions">
+      <button id="dialogCopy" type="button" hidden>Copy report</button>
+      <span class="grow"></span>
+      <button value="cancel" id="dialogCancel">Close</button>
+      <button value="ok" id="dialogOk" class="primary" hidden>OK</button>
+    </div>
+  </form>
+</dialog>
+
+<footer>No subscription, account or plan upload. Names change only through PlanSwift; page IDs, scales, measurements and takeoff stay with each page.</footer>
+<script src="/naming.js?token=__TOKEN__"></script>
+<script src="/ui.js?token=__TOKEN__"></script>
+</body>
+</html>

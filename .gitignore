@@ -1,0 +1,4 @@
+node_modules/
+page-renamer/data/
+page-renamer/dist/
+*.log
