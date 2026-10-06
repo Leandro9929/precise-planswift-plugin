@@ -29,7 +29,7 @@ Page GUIDs, scales, measurements and takeoff therefore stay with each page; the 
 
 ## Install and run
 
-1. Extract the whole ZIP into a permanent folder you can write to (for example `C:\Tools\Precise Page Renamer`). Keep `node_modules`, `assets`, `bridge`, `lib` and `ui` next to `server.js`.
+1. Right-click the ZIP → **Extract All…** into a permanent local folder you can write to, for example `C:\Tools\Precise Page Renamer`. Do not run the tool from inside the ZIP (Windows then copies out only the clicked file), and prefer a folder that iCloud Drive or OneDrive does not sync. Keep `node_modules`, `assets`, `bridge`, `lib` and `ui` next to `server.js`.
 2. Node.js 20.9 or newer must be installed (`node --version`).
 3. Open the job in PlanSwift.
 4. Double-click **Start Precise Page Renamer.cmd**. The browser opens the tool; keep the black window open while you use it.
