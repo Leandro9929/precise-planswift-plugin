@@ -339,6 +339,7 @@ function appendRowElement(r) {
     validate();
   });
   const crops = el('td', { class: 'crops' });
+  if (r.boxZone) crops.append(el('img', { loading: 'lazy', alt: 'Your sheet number box', title: 'Your sheet number box', src: cropUrl(r.id, r.boxZone) }));
   if (r.numberZone) crops.append(el('img', { loading: 'lazy', alt: 'Sheet number as read', src: cropUrl(r.id, r.numberZone) }));
   if (r.titleZone) crops.append(el('img', { loading: 'lazy', alt: 'Title as read', src: cropUrl(r.id, r.titleZone) }));
   const check = el('td', { class: 'check' });

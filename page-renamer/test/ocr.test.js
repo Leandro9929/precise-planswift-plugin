@@ -64,6 +64,32 @@ test('reads user-drawn boxes, including a vertical number', { timeout: 120000 },
   assert.notEqual(vertical.rotation, 0);
 });
 
+test('reads a sheet number inside a revision cloud with a delta tag', { timeout: 180000 }, async () => {
+  const file = await sheet('cloud', { layout: 'cloud', number: 'A2.6', title: ['FIRST FLOOR', 'LIGHTING PLAN'], width: 7200, height: 4800 });
+  const page = await ocr.loadPage(file);
+  // Boxes drawn around the cloud, tight on the number, loose, and shifted as on another page.
+  for (const z of [{ x: 0.875, y: 0.895, w: 0.11, h: 0.07 }, { x: 0.895, y: 0.91, w: 0.07, h: 0.035 },
+    { x: 0.87, y: 0.88, w: 0.12, h: 0.095 }, { x: 0.88, y: 0.905, w: 0.11, h: 0.07 }]) {
+    const read = await ocr.recognizeZone(page, z, 'number');
+    assert.equal(normalizeNumber(read.text).number, 'A2.6', JSON.stringify(z));
+    assert.ok(read.confidence >= 60, `confidence ${read.confidence}`);
+  }
+  const found = await detectTitleBlock(page);
+  assert.equal(found.number, 'A2.6');
+  assert.equal(found.title, 'FIRST FLOOR LIGHTING PLAN');
+});
+
+test('a box that misses is searched around, never across the drawing', { timeout: 180000 }, async () => {
+  const { readPage } = require('../lib/scan');
+  const file = await sheet('cloud-shift', { layout: 'cloud', number: 'E1.1', title: ['FIRST FLOOR', 'LIGHTING PLAN'], width: 7200, height: 4800 }, 'bilevel');
+  const options = { mode: 'zones', titleZone: null, autoFallback: true, naming: {} };
+  const near = await readPage(file, { ...options, numberZone: { x: 0.887, y: 0.885, w: 0.11, h: 0.07 } });
+  assert.equal(near.number, 'E1.1');
+  // A box over the drawing, next to feet-inch dimensions: nothing is better than a dimension.
+  const off = await readPage(file, { ...options, numberZone: { x: 0.6, y: 0.6, w: 0.06, h: 0.03 } });
+  assert.ok(!/^[A-Z]{1,3}-?\d/.test(off.number), `read "${off.number}" from the drawing`);
+});
+
 test('rejects malformed zones', () => {
   assert.throws(() => ocr.validateZone(null), /Draw/);
   assert.throws(() => ocr.validateZone({ x: 0.9, y: 0.9, w: 0.5, h: 0.05 }), /Invalid/);

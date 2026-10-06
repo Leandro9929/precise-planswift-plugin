@@ -9,7 +9,9 @@ test('normalizes OCR sheet numbers and flags look-alike corrections', () => {
     ['S-2.0l', 'S-2.01', true], ['FP-2.01', 'FP-2.01', false], ['M2.1A', 'M2.1A', false], ['AI01', 'A101', true],
     ['A1,1', 'A1.1', false], ['PL-1', 'PL-1', false], ['SHEET NO. A-201', 'A-201', false], ['DWG NO: E0.01', 'E0.01', false],
     ['M-401 |', 'M-401', false], ['| A1.1', 'A1.1', false], ['A-101 1', 'A-101', false], ['SHEET 3 OF 10', '3', false],
-    ['A — 101', 'A-101', false], ['C 1.0', 'C1.0', false]
+    ['A — 101', 'A-101', false], ['C 1.0', 'C1.0', false],
+    // Feet-inch dimensions are never sheet numbers.
+    ["9'-9\"", '', false], ["g'-9!", '', false], ["12'-0\" A2.6", 'A2.6', false], ['A2.6"', 'A2.6', false]
   ];
   for (const [raw, number, corrected] of cases) {
     assert.deepEqual(n.normalizeNumber(raw), { number, corrected }, raw);

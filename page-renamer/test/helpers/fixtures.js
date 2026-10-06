@@ -49,6 +49,60 @@ function verticalStrip(W, H, number, title) {
   ].join('');
 }
 
+// Revision cloud: scallops bulging outward around an ellipse.
+function cloud(cx, cy, rx, ry, stroke) {
+  const n = 18;
+  const pts = Array.from({ length: n }, (_, i) => [cx + rx * Math.cos((2 * Math.PI * i) / n), cy + ry * Math.sin((2 * Math.PI * i) / n)]);
+  let d = `M${pts[0][0]},${pts[0][1]}`;
+  for (let i = 1; i <= n; i++) {
+    const [x, y] = pts[i % n];
+    const chord = Math.hypot(x - pts[i - 1][0], y - pts[i - 1][1]);
+    d += ` A${chord * 0.6},${chord * 0.6} 0 0 1 ${x},${y}`;
+  }
+  return `<path d="${d}" fill="none" stroke="#000" stroke-width="${stroke}"/>`;
+}
+
+// Modelled on a real residential set: vertical strip with grey bands, the sheet number inside a
+// revision cloud with a delta tag, a view title with a callout bubble on the drawing, and
+// feet-inch dimensions near the title block.
+function cloudStrip(W, H, number, title) {
+  const x = W * 0.87;
+  const w = W * 0.12;
+  const s = H / 2400;
+  const titleLines = Array.isArray(title) ? title : [title];
+  const cx = x + w / 2;
+  const cy = H * 0.93;
+  const band = (y) => `<rect x="${x + 10 * s}" y="${y}" width="${w - 20 * s}" height="${18 * s}" fill="#555"/>`;
+  return [
+    text(x + 40 * s, H * 0.3, 60 * s, 'Composto Residence', `font-weight="bold" transform="rotate(-90 ${x + 40 * s} ${H * 0.3})"`),
+    text(x + 90 * s, H * 0.3, 22 * s, '1813 W. 14th Street', `transform="rotate(-90 ${x + 90 * s} ${H * 0.3})"`),
+    band(H * 0.6),
+    text(x + 20 * s, H * 0.625, 16 * s, 'Document Date:'),
+    text(x + 20 * s, H * 0.64, 16 * s, 'July 2026'),
+    text(x + 20 * s, H * 0.66, 16 * s, 'Document Phase: Construction Documents'),
+    text(x + 40 * s, H * 0.73, 22 * s, 'PERMIT'),
+    text(x + 20 * s, H * 0.745, 22 * s, 'RE-SUBMISSION'),
+    band(H * 0.81),
+    ...titleLines.map((line, i) => text(x + 20 * s, H * 0.84 + i * 30 * s, 26 * s, line, 'font-weight="bold"')),
+    cloud(cx, cy, w * 0.42, H * 0.03, 3 * s),
+    `<path d="M${x + 22 * s},${cy - 20 * s} l${12 * s},${-22 * s} l${12 * s},${22 * s} z" fill="none" stroke="#000" stroke-width="${2 * s}"/>`,
+    text(x + 30 * s, cy - 24 * s, 12 * s, '1'),
+    text(cx, cy + 30 * s, 84 * s, number, 'font-weight="bold" text-anchor="middle"'),
+    band(H * 0.975),
+    // Drawing content near the title block.
+    text(W * 0.62, H * 0.62, 18 * s, '9\'-9"'),
+    text(W * 0.7, H * 0.66, 18 * s, '12\'-0"'),
+    text(W * 0.76, H * 0.58, 18 * s, '3\'-6"'),
+    text(W * 0.55, H * 0.7, 16 * s, 'GARAGE'),
+    `<circle cx="${W * 0.7}" cy="${H * 0.9}" r="${22 * s}" fill="none" stroke="#000" stroke-width="${2 * s}"/>`,
+    `<line x1="${W * 0.7 - 22 * s}" y1="${H * 0.9}" x2="${W * 0.7 + 22 * s}" y2="${H * 0.9}" stroke="#000" stroke-width="${2 * s}"/>`,
+    text(W * 0.7 - 6 * s, H * 0.9 - 4 * s, 14 * s, '1'),
+    text(W * 0.7 - 16 * s, H * 0.9 + 16 * s, 12 * s, number),
+    text(W * 0.72, H * 0.9, 22 * s, titleLines.join(' ')),
+    `<line x1="${W * 0.72}" y1="${H * 0.905}" x2="${W * 0.85}" y2="${H * 0.905}" stroke="#000" stroke-width="${2 * s}"/>`
+  ].join('');
+}
+
 function bottomStrip(W, H, number, title) {
   const y = H * 0.875;
   const s = H / 2400;
@@ -82,7 +136,7 @@ function cornerBox(W, H, number, title) {
   ].join('');
 }
 
-const LAYOUTS = { vertical: verticalStrip, bottom: bottomStrip, corner: cornerBox };
+const LAYOUTS = { vertical: verticalStrip, bottom: bottomStrip, corner: cornerBox, cloud: cloudStrip };
 
 function sheetSvg({ layout = 'vertical', number, title, width = 3600, height = 2400 }) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`

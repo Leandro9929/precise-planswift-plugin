@@ -2,10 +2,17 @@
 // Reads sheet numbers and titles for a list of pages and proposes PlanSwift names.
 const crypto = require('node:crypto');
 const ocr = require('./ocr');
-const { detectTitleBlock } = require('./detect');
+const { detectTitleBlock, findNumberIn } = require('./detect');
 const { normalizeNumber, isSheetNumber, isNumericSheet, cleanTitle, buildName, validateName, nameKey, clean } = require('./naming');
 
 const LOW = 60;
+
+// The box grown by its own size on every side, kept on the sheet.
+function around(z) {
+  const x = Math.max(0, z.x - z.w);
+  const y = Math.max(0, z.y - z.h);
+  return { x, y, w: Math.min(1, z.x + 2 * z.w) - x, h: Math.min(1, z.y + 2 * z.h) - y };
+}
 
 function validNumber(n) {
   return isSheetNumber(n) || isNumericSheet(n);
@@ -29,18 +36,22 @@ async function readPage(file, options) {
     }
     const weak = !validNumber(out.number) || out.numberConfidence < LOW;
     if (!(weak && options.autoFallback)) return out;
-    const found = await detectTitleBlock(page);
-    if (!found.number) return out;
-    out.source = 'auto (box missed)';
+    // Search only around the box (the same title block, shifted or partly covered); the rest of
+    // the sheet is full of dimensions and callouts that look like sheet numbers.
+    const found = await findNumberIn(page, around(options.numberZone));
+    if (!found) return out;
+    if (found.number === out.number) {
+      // The box was right; the second look only confirms it.
+      out.numberConfidence = Math.max(out.numberConfidence, found.numberConfidence);
+      return out;
+    }
+    if (validNumber(out.number) && found.numberConfidence <= out.numberConfidence) return out;
+    out.source = 'found near the box';
+    out.boxZone = options.numberZone;
     out.raw = found.numberRaw || found.number;
     out.number = found.number;
     out.numberConfidence = found.numberConfidence;
     out.numberZone = found.numberZone;
-    if (!options.titleZone || !out.title) {
-      out.title = found.title;
-      out.titleConfidence = found.titleConfidence;
-      out.titleZone = found.titleZone;
-    }
     return out;
   }
   const found = await detectTitleBlock(page);
@@ -61,7 +72,7 @@ function rowWarnings(row, read, options, notes = []) {
   if (row.number && read.numberConfidence < LOW) warnings.push('Low confidence sheet number');
   if (options.titles && !row.title) warnings.push('Title not found');
   else if (options.titles && row.title && read.titleConfidence < LOW) warnings.push('Low confidence title');
-  if (read.source !== options.mode && read.source !== 'auto') warnings.push('Box missed; found automatically');
+  if (read.source === 'found near the box') warnings.push('Box missed; number found next to it');
   const reason = row.newName ? validateName(row.newName) : 'No name proposed';
   if (reason) warnings.push(reason);
   return warnings;
@@ -114,6 +125,7 @@ class ScanJob {
           row.numberZone = read.numberZone;
           row.titleZone = read.titleZone;
           row.source = read.source;
+          row.boxZone = read.boxZone || null;
           row.newName = buildName(row.number, options.titles ? row.title : '', options.naming);
           row.notes = [];
           row.warnings = rowWarnings(row, read, options, row.notes);

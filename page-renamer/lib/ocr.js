@@ -4,6 +4,7 @@ const path = require('node:path');
 const sharp = require('sharp');
 const { createWorker, PSM } = require('tesseract.js');
 const { clean, normalizeNumber, isSheetNumber } = require('./naming');
+const { isolateNumber } = require('./glyphs');
 
 const base = path.join(__dirname, '..');
 const LIMIT_PIXELS = 0x10000000; // 268 MP, enough for 48x36 in sheets at 400 dpi
@@ -64,10 +65,6 @@ async function loadPage(file) {
   return { data, width: info.width, height: info.height, channels: info.channels };
 }
 
-function rawImage(page) {
-  return sharp(page.data, { raw: { width: page.width, height: page.height, channels: page.channels } });
-}
-
 function validateZone(z) {
   if (!z || !['x', 'y', 'w', 'h'].every((k) => Number.isFinite(z[k]))) throw Error('Draw the sheet number box first.');
   if (z.x < 0 || z.y < 0 || z.w < 0.002 || z.h < 0.002 || z.x + z.w > 1.001 || z.y + z.h > 1.001) {
@@ -86,51 +83,132 @@ function region(page, z) {
   };
 }
 
-// Crops a zone, rotates it and scales it so text lands in the size range tesseract reads best.
-// Extraction and rotation run as separate pipelines because sharp applies a 90-degree rotate
-// ahead of extract within one pipeline.
-async function cropForOcr(page, z, { mode = 'title', rotate = 0, maxSide = 3000 } = {}) {
-  const r = region(page, z);
-  let pipeline = rawImage(page).extract(r);
-  if (rotate) {
-    const { data, info } = await pipeline.raw().toBuffer({ resolveWithObject: true });
-    pipeline = sharp(data, { raw: { width: info.width, height: info.height, channels: info.channels } }).rotate(rotate);
+// Cuts a region out of the decoded page as 8-bit greyscale, turned by 0/90/180/270 degrees
+// clockwise. Done in JS so the channel count stays 1 (sharp re-encodes raw greyscale as RGB).
+function cropGray(page, r, rotate = 0) {
+  const { width: W, channels: ch } = page;
+  const out = Buffer.alloc(r.width * r.height);
+  for (let y = 0; y < r.height; y++) {
+    const row = (r.top + y) * W;
+    for (let x = 0; x < r.width; x++) out[y * r.width + x] = page.data[(row + r.left + x) * ch];
   }
-  const [w, h] = rotate % 180 ? [r.height, r.width] : [r.width, r.height];
-  let scale;
-  if (mode === 'number') scale = Math.min(4, Math.max(90, Math.min(h, 220)) / h);
-  else if (mode === 'words') scale = Math.min(1, maxSide / Math.max(w, h));
-  else scale = Math.min(3, Math.max(1, 900 / w), 1200 / h);
-  scale = Math.min(scale, maxSide / w, maxSide / h);
-  const png = await pipeline
+  if (!rotate) return { data: out, w: r.width, h: r.height };
+  const w = r.width;
+  const h = r.height;
+  if (rotate === 180) {
+    const turned = Buffer.alloc(w * h);
+    for (let i = 0; i < w * h; i++) turned[w * h - 1 - i] = out[i];
+    return { data: turned, w, h };
+  }
+  const turned = Buffer.alloc(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // 90: (x, y) -> (h - 1 - y, x); 270: (x, y) -> (y, w - 1 - x). New width is h.
+      const [nx, ny] = rotate === 90 ? [h - 1 - y, x] : [y, w - 1 - x];
+      turned[ny * h + nx] = out[y * w + x];
+    }
+  }
+  return { data: turned, w: h, h: w };
+}
+
+async function encode(gray, w, h, scale) {
+  return sharp(gray, { raw: { width: w, height: h, channels: 1 } })
     .resize({ width: Math.max(8, Math.round(w * scale)), kernel: scale < 1 ? 'lanczos3' : 'cubic' })
     .normalise()
     .extend({ top: 24, bottom: 24, left: 24, right: 24, background: { r: 255, g: 255, b: 255 } })
     .png({ compressionLevel: 1 })
     .toBuffer();
-  return { png, scale, rect: r, pad: 24 };
 }
 
-// Tesseract reports 0 confidence whenever a character whitelist is active, so numbers are read
-// plainly first and the whitelist read is used as a cross-check and fallback.
-async function readNumber(png) {
-  const plain = await ocr(png, { tessedit_pageseg_mode: PSM.SINGLE_LINE });
-  const plainText = clean(plain.text);
-  const plainNumber = normalizeNumber(plainText).number;
-  const plainConfidence = Math.round(plain.confidence || 0);
-  if (isSheetNumber(plainNumber) && plainConfidence >= 70) return { text: plainText, confidence: plainConfidence };
-  const strict = await ocr(png, { tessedit_pageseg_mode: PSM.SINGLE_LINE, tessedit_char_whitelist: NUMBER_CHARS });
-  const strictText = clean(strict.text);
-  const strictNumber = normalizeNumber(strictText).number;
-  if (isSheetNumber(strictNumber)) {
-    if (strictNumber === plainNumber) return { text: plainText, confidence: Math.max(plainConfidence, 75) };
-    return { text: strictText, confidence: Math.min(plainConfidence, 55) };
+// Crops a zone, rotates it and scales it so text lands in the size range tesseract reads best.
+async function cropForOcr(page, z, { mode = 'title', rotate = 0, maxSide = 3000 } = {}) {
+  const r = region(page, z);
+  const { data, w, h } = cropGray(page, r, rotate);
+  let scale;
+  if (mode === 'number') scale = Math.min(4, Math.max(90, Math.min(h, 220)) / h);
+  else if (mode === 'words') scale = Math.min(1, maxSide / Math.max(w, h));
+  else scale = Math.min(3, Math.max(1, 900 / w), 1200 / h);
+  scale = Math.min(scale, maxSide / w, maxSide / h);
+  return { png: await encode(data, w, h, scale), scale, rect: r, pad: 24 };
+}
+
+// The number's own glyphs only (no cloud, frame, delta tag or label), cropped to the text row.
+async function isolatedNumberPng(page, z, rotate) {
+  const { data, w, h } = cropGray(page, region(page, z), rotate);
+  const found = isolateNumber(data, w, h);
+  if (!found) return null;
+  const { top, bottom, left, right } = found.band;
+  const bandH = bottom - top + 1;
+  const m = Math.round(bandH * 0.3);
+  const x0 = Math.max(0, Math.floor(left) - m);
+  const y0 = Math.max(0, top - m);
+  const x1 = Math.min(w - 1, Math.ceil(right) + m);
+  const y1 = Math.min(h - 1, bottom + m);
+  const cw = x1 - x0 + 1;
+  const chh = y1 - y0 + 1;
+  const cut = Buffer.alloc(cw * chh);
+  for (let y = 0; y < chh; y++) found.data.copy(cut, y * cw, (y0 + y) * w + x0, (y0 + y) * w + x0 + cw);
+  const scale = Math.min(4, Math.max(0.3, 90 / bandH));
+  return encode(cut, cw, chh, scale);
+}
+
+async function readText(png, whitelist) {
+  const data = await ocr(png, whitelist
+    ? { tessedit_pageseg_mode: PSM.SINGLE_LINE, tessedit_char_whitelist: NUMBER_CHARS }
+    : { tessedit_pageseg_mode: PSM.SINGLE_LINE });
+  const text = clean(data.text);
+  const number = normalizeNumber(text).number;
+  // Tesseract reports 0 confidence whenever a character whitelist is active.
+  return { text, number, valid: isSheetNumber(number), confidence: whitelist ? null : Math.round(data.confidence || 0) };
+}
+
+// Chooses among several reads of the same box. Reads of the isolated glyphs count more, a
+// reading that is the other with a stray leading letter ("CA2.6" vs "A2.6") loses to it, and a
+// reading cut short ("A2" vs "A2.6") loses to the complete one.
+function chooseNumber(reads) {
+  const votes = new Map();
+  for (const r of reads) {
+    if (!r.valid) continue;
+    const v = votes.get(r.number) || { number: r.number, score: 0, confidence: null, text: r.text, isolated: false };
+    v.score += (r.confidence ?? 40) + (r.isolated ? 15 : 0);
+    if (r.confidence !== null && (v.confidence === null || r.confidence > v.confidence)) { v.confidence = r.confidence; v.text = r.text; }
+    v.isolated = v.isolated || r.isolated;
+    votes.set(r.number, v);
   }
-  return { text: plainText || strictText, confidence: plainConfidence };
+  const ranked = [...votes.values()].sort((a, b) => b.score - a.score);
+  if (!ranked.length) return null;
+  let best = ranked[0];
+  for (const other of ranked.slice(1)) {
+    if (other.score < best.score * 0.5) continue;
+    const longer = other.number.length > best.number.length && other.number.startsWith(best.number) && /^[.\-]?\d/.test(other.number.slice(best.number.length));
+    const stray = best.number.length === other.number.length + 1 && best.number.endsWith(other.number) && /^[A-Z]/.test(best.number);
+    if (longer || stray) best = other;
+  }
+  const rivals = ranked.filter((v) => v !== best && v.score >= best.score * 0.5
+    && !(best.number.endsWith(v.number) || v.number.endsWith(best.number) || best.number.startsWith(v.number)));
+  let confidence = best.confidence ?? 55;
+  if (rivals.length) confidence = Math.min(confidence, 59);
+  return { text: best.text, number: best.number, confidence };
 }
 
-function scoreNumber(text, confidence) {
-  const { number } = normalizeNumber(text);
+async function readNumber(page, z, rotate) {
+  const reads = [];
+  const isolated = await isolatedNumberPng(page, z, rotate);
+  if (isolated) reads.push({ ...(await readText(isolated, false)), isolated: true });
+  const { png } = await cropForOcr(page, z, { mode: 'number', rotate });
+  reads.push({ ...(await readText(png, false)), isolated: false });
+  const confident = reads.some((r) => r.valid && r.confidence >= 75);
+  if (!confident) {
+    if (isolated) reads.push({ ...(await readText(isolated, true)), isolated: true });
+    reads.push({ ...(await readText(png, true)), isolated: false });
+  }
+  const chosen = chooseNumber(reads);
+  if (chosen) return chosen;
+  const fallback = reads.find((r) => r.text) || reads[0];
+  return { text: fallback.text, number: fallback.number, confidence: fallback.confidence || 0 };
+}
+
+function scoreNumber(number, confidence) {
   return (isSheetNumber(number) ? 100 : 0) + confidence;
 }
 
@@ -144,12 +222,15 @@ async function recognizeZone(page, z, mode, { rotations } = {}) {
   const order = rotations || (tall ? [90, 270, 0] : [0, 90, 270]);
   let best = null;
   for (const rotate of order) {
-    const { png } = await cropForOcr(page, z, { mode, rotate });
     let text;
     let confidence;
+    let score;
     if (isNumber) {
-      ({ text, confidence } = await readNumber(png));
+      const read = await readNumber(page, z, rotate);
+      ({ text, confidence } = read);
+      score = scoreNumber(read.number, confidence);
     } else {
+      const { png } = await cropForOcr(page, z, { mode, rotate });
       const data = await ocr(png, { tessedit_pageseg_mode: PSM.SINGLE_BLOCK });
       text = clean(data.text);
       confidence = Math.round(data.confidence || 0);
@@ -158,8 +239,8 @@ async function recognizeZone(page, z, mode, { rotations } = {}) {
         text = clean(auto.text);
         confidence = Math.round(auto.confidence || 0);
       }
+      score = (text ? 100 : 0) + confidence;
     }
-    const score = isNumber ? scoreNumber(text, confidence) : (text ? 100 : 0) + confidence;
     if (!best || score > best.score) best = { text, confidence, rotation: rotate, score };
     if (isNumber ? score >= 160 : (score >= 160 || (!tall && text))) break;
   }
@@ -222,5 +303,5 @@ async function previewImage(file, width) {
 }
 
 module.exports = {
-  loadPage, recognizeZone, recognizeWords, cropPreview, previewImage, validateZone, region, closeWorker, getWorker
+  cropGray, loadPage, recognizeZone, recognizeWords, cropPreview, previewImage, validateZone, region, closeWorker, getWorker
 };

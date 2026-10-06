@@ -62,8 +62,9 @@ function normalizeNumber(raw) {
     .replace(/\s*([.\-–—])\s*/g, '$1')
     .trim();
   const lookAlike = lowerL.test(raw1);
-  // A lone "|" or "I" beside the number is usually a title-block border line.
-  const tokens = text.split(/\s+/).filter((t) => !/^[|I]$/.test(t))
+  // A lone "|" or "I" beside the number is usually a title-block border line, and anything with a
+  // feet mark is a dimension (9'-9", 12'-0"), never a sheet number.
+  const tokens = text.split(/\s+/).filter((t) => !/^[|I]$/.test(t) && !/['’′`]/.test(t))
     .map((t) => t.replace(/^\|+|\|+$/g, '')).filter(Boolean);
   let best = null;
   for (let i = 0; i < tokens.length; i++) {

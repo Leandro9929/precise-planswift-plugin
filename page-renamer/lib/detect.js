@@ -3,7 +3,9 @@
 // Strategy: OCR the bottom-right part of the sheet (where US/ANSI/ISO title blocks put the
 // number), score sheet-number-shaped words by size, nearby labels and position, then take the
 // title from under a "SHEET TITLE"-style label or, failing that, the largest nearby text.
-const { recognizeWords, recognizeZone } = require('./ocr');
+const sharp = require('sharp');
+const { recognizeWords, recognizeZone, cropGray, region } = require('./ocr');
+const { glyphGroups } = require('./glyphs');
 const { normalizeNumber, isSheetNumber, isNumericSheet, cleanTitle, clean } = require('./naming');
 
 const REGIONS = [
@@ -44,13 +46,20 @@ function intersection(a, b) {
   return w > 0 && h > 0 ? w * h : 0;
 }
 
-// Overlapping scan regions read the same text twice, and a region edge can cut a line short
-// ("ANICAL ROOF PLAN"); keep the most complete reading of each line.
+// Overlapping scan regions read the same text twice, a region edge can cut a line short
+// ("ANICAL ROOF PLAN") and a blurred region can merge two lines into one garbled reading
+// ("py DATION"). Confident readings are kept first, larger before smaller, and any reading
+// mostly covered by kept ones is dropped.
 function dedupeLines(lines) {
-  const sorted = [...lines].sort((a, b) => area(b.box) - area(a.box));
+  const confidence = (line) => line.words.reduce((s, w) => s + w.confidence, 0) / Math.max(1, line.words.length);
+  const tier = (line) => (confidence(line) >= 80 ? 2 : confidence(line) >= 50 ? 1 : 0);
+  const sorted = [...lines].sort((a, b) => tier(b) - tier(a) || area(b.box) - area(a.box));
   const kept = [];
   for (const line of sorted) {
-    if (!kept.some((k) => intersection(k.box, line.box) > area(line.box) * 0.6)) kept.push(line);
+    const covered = kept.reduce((sum, k) => sum + intersection(k.box, line.box), 0);
+    // A doubtful reading that overlaps confident ones noticeably is a garbled copy of them.
+    const limit = tier(line) < 2 && kept.some((k) => tier(k) > tier(line) && intersection(k.box, line.box) > 0) ? 0.3 : 0.6;
+    if (covered <= area(line.box) * limit) kept.push(line);
   }
   return kept;
 }
@@ -99,8 +108,9 @@ function labelNear(candidate, lines, aspect) {
   return false;
 }
 
-function pickNumber(lines, aspect = 1) {
-  const candidates = numberCandidates(lines);
+// extra: candidates found from glyph shapes rather than page OCR (see glyphCandidates).
+function pickNumber(lines, aspect = 1, extra = []) {
+  const candidates = numberCandidates(lines).concat(extra);
   if (!candidates.length) return null;
   const tallest = Math.max(...candidates.map((c) => c.box.h));
   for (const c of candidates) {
@@ -115,7 +125,14 @@ function pickNumber(lines, aspect = 1) {
       - (c.line.words.length > 4 ? 1 : 0);
   }
   candidates.sort((a, b) => b.score - a.score);
-  return candidates[0].score > 0 ? candidates[0] : null;
+  let best = candidates[0];
+  if (best.score <= 0) return null;
+  // The same number read in pieces ("M2.0" + "1"): take the complete reading in the same place.
+  const fuller = candidates.find((c) => c.score > 0 && c.number.length > best.number.length
+    && c.number.startsWith(best.number) && /^[.\-]?\d/.test(c.number.slice(best.number.length))
+    && intersection(c.box, best.box) >= area(best.box) * 0.5);
+  if (fuller) best = fuller;
+  return best;
 }
 
 function isLabelLine(line) {
@@ -123,11 +140,12 @@ function isLabelLine(line) {
   return TITLE_LABEL.test(t) || (OTHER_LABEL.test(t) && line.words.length <= 4) || /:$/.test(t);
 }
 
-function usableTitleLine(line, number) {
+// relaxed: for lines continuing a title, where a word like "SHEET" ("COVER / SHEET") is part of it.
+function usableTitleLine(line, number, relaxed = false) {
   const text = clean(line.text);
   if (!text || text.length < 3) return false;
-  if (NOISE_TITLE.test(text) || isLabelLine(line)) return false;
-  if (line.words.every((w) => NUMBER_LABEL.test(w.text))) return false;
+  if (NOISE_TITLE.test(text) || (!relaxed && isLabelLine(line))) return false;
+  if (!relaxed && line.words.every((w) => NUMBER_LABEL.test(w.text))) return false;
   if (number && line.words.some((w) => w.box === number.box || normalizeNumber(w.text).number === number.number)) return false;
   const letters = (text.match(/[A-Za-z]/g) || []).length;
   return letters >= 3 && letters / text.length > 0.5;
@@ -156,6 +174,7 @@ function hasTitleLabel(lines) {
 function pickTitle(lines, number, aspect = 1) {
   const sorted = [...lines].sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x);
   const usable = sorted.filter((line) => usableTitleLine(line, number));
+  const continuation = sorted.filter((line) => usableTitleLine(line, number, true));
   // 1. Text under (or right of) a SHEET TITLE label.
   for (const labelLine of sorted) {
     if (!TITLE_LABEL.test(labelLine.text)) continue;
@@ -166,7 +185,7 @@ function pickTitle(lines, number, aspect = 1) {
     if (below.length) {
       const tallest = Math.max(...below.map((line) => line.box.h));
       const first = below.find((line) => line.box.h >= tallest * 0.7);
-      return growTitle(first, usable);
+      return growTitle(first, continuation);
     }
     const inline = clean(labelLine.text.replace(TITLE_LABEL, ''));
     if (inline.length >= 3) return [{ ...labelLine, text: inline }];
@@ -195,54 +214,121 @@ function pickTitle(lines, number, aspect = 1) {
     if (!above) break;
     top = above;
   }
-  return growTitle(top, near);
+  const pool = near.concat(continuation.filter((line) => !near.includes(line))).sort((a, b) => a.box.y - b.box.y);
+  return growTitle(top, pool);
+}
+
+// Sheet numbers drawn inside revision clouds, boxes or bands are often skipped by page-level
+// OCR. Rows of large, similar glyphs are found from the image itself and read one by one.
+async function glyphCandidates(page, zone, { minFrac = 0.012, maxFrac = 0.07, limit = 5 } = {}) {
+  const r = region(page, zone);
+  const { data, w, h } = cropGray(page, r);
+  let gray = data;
+  let gw = w;
+  let gh = h;
+  if (Math.max(w, h) > 1600) {
+    const out = await sharp(data, { raw: { width: w, height: h, channels: 1 } })
+      .resize({ width: Math.round(w * 1600 / Math.max(w, h)) })
+      .extractChannel(0).raw().toBuffer({ resolveWithObject: true });
+    gray = out.data;
+    gw = out.info.width;
+    gh = out.info.height;
+  }
+  const sx = gw / w;
+  const sy = gh / h;
+  const groups = glyphGroups(gray, gw, gh, {
+    minH: Math.max(6, minFrac * page.height * sy),
+    maxH: maxFrac * page.height * sy
+  }).slice(0, limit);
+  const aspect = page.height / page.width;
+  const found = [];
+  for (const g of groups) {
+    const box = {
+      x: (r.left + g.x0 / sx) / page.width,
+      y: (r.top + g.y0 / sy) / page.height,
+      w: (g.x1 - g.x0 + 1) / sx / page.width,
+      h: g.h / sy / page.height
+    };
+    const read = await recognizeZone(page, pad(box, box.h * 0.6, box.h * 0.3, aspect), 'number', { rotations: [0] });
+    const { number } = normalizeNumber(read.text);
+    if (!isSheetNumber(number)) continue;
+    found.push({ number, strong: true, box, line: { words: [], text: number }, confidence: read.confidence, refersElsewhere: false, raw: read.text });
+  }
+  return found;
+}
+
+// Re-reads the chosen number at full resolution and reconciles the two reads.
+async function refineNumber(page, number, aspect) {
+  const out = {
+    number: number.number, numberRaw: number.raw, numberConfidence: number.confidence,
+    numberZone: pad(number.box, number.box.h * 0.8, number.box.h * 0.35, aspect)
+  };
+  const read = await recognizeZone(page, out.numberZone, 'number');
+  const normalized = normalizeNumber(read.text).number;
+  // A shorter re-read ("FP-1" for "FP-1.01") usually means the crop clipped the number.
+  const clipped = number.number.startsWith(normalized) && normalized.length < number.number.length;
+  const valid = isSheetNumber(normalized) || (!number.strong && isNumericSheet(normalized));
+  // ...and a longer re-read ("M2.01" for "M2.0") means the first read was cut short.
+  const completes = normalized.length > number.number.length && normalized.startsWith(number.number)
+    && /^[.\-]?\d/.test(normalized.slice(number.number.length));
+  if (valid && completes && read.confidence >= 60) {
+    out.number = normalized;
+    out.numberRaw = read.text;
+    out.numberConfidence = read.confidence;
+  } else if (valid && normalized === number.number) {
+    out.numberConfidence = Math.max(read.confidence, number.confidence);
+    out.numberRaw = read.confidence >= number.confidence ? read.text : number.raw;
+  } else if (valid && !clipped && read.confidence >= 70 && read.confidence >= number.confidence + 15) {
+    // A clearly better full-resolution read wins outright.
+    out.number = normalized;
+    out.numberRaw = read.text;
+    out.numberConfidence = read.confidence;
+  } else if (valid && !clipped && (!number.strong || read.confidence > number.confidence)) {
+    // The two reads disagree: take the more confident one but leave it for review.
+    out.number = normalized;
+    out.numberRaw = read.text;
+    out.numberConfidence = Math.min(read.confidence, 59);
+  } else if (valid && !clipped) {
+    out.numberConfidence = Math.min(number.confidence, 59);
+  }
+  return out;
+}
+
+// Looks for the sheet number only inside one area (around a user-drawn box that missed).
+async function findNumberIn(page, zone) {
+  const aspect = page.height / page.width;
+  const lines = await recognizeWords(page, zone);
+  const extra = await glyphCandidates(page, zone, { minFrac: 0.004, maxFrac: 0.12 });
+  const number = pickNumber(lines, aspect, extra);
+  if (!number || !number.strong) return null;
+  return refineNumber(page, number, aspect);
 }
 
 // Returns { number, title, numberZone, titleZone, numberConfidence, titleConfidence, source }.
 async function detectTitleBlock(page, { regions = REGIONS, refine = true } = {}) {
   const aspect = page.height / page.width;
   let lines = [];
+  let extra = [];
   let number = null;
-  for (const zone of regions) {
+  for (const [i, zone] of regions.entries()) {
     lines = dedupeLines(lines.concat(await recognizeWords(page, zone)));
-    number = pickNumber(lines, aspect);
+    if (i === 0 || !number || !number.strong) extra = extra.concat(await glyphCandidates(page, zone));
+    number = pickNumber(lines, aspect, extra);
     if (number && number.strong && number.score > 4 && hasTitleLabel(lines)) break;
   }
   if (!number || !number.strong) {
     // Title blocks printed sideways along the right edge.
     lines = dedupeLines(lines.concat(await recognizeWords(page, REGIONS[1], { rotate: 90 })));
-    number = pickNumber(lines, aspect);
+    number = pickNumber(lines, aspect, extra);
   }
   const titleLines = pickTitle(lines, number, aspect);
   const out = { number: '', numberRaw: '', title: '', numberZone: null, titleZone: null, numberConfidence: 0, titleConfidence: 0 };
   if (number) {
-    out.numberZone = pad(number.box, number.box.h * 0.8, number.box.h * 0.35, aspect);
-    out.number = number.number;
-    out.numberRaw = number.raw;
-    out.numberConfidence = number.confidence;
-    if (refine) {
-      const read = await recognizeZone(page, out.numberZone, 'number');
-      const normalized = normalizeNumber(read.text).number;
-      // A shorter re-read ("FP-1" for "FP-1.01") usually means the crop clipped the number.
-      const clipped = number.number.startsWith(normalized) && normalized.length < number.number.length;
-      const valid = isSheetNumber(normalized) || (!number.strong && isNumericSheet(normalized));
-      if (valid && normalized === number.number) {
-        out.numberConfidence = Math.max(read.confidence, number.confidence);
-        out.numberRaw = read.confidence >= number.confidence ? read.text : number.raw;
-      } else if (valid && !clipped && read.confidence >= 70 && read.confidence >= number.confidence + 15) {
-        // A clearly better full-resolution read wins outright.
-        out.number = normalized;
-        out.numberRaw = read.text;
-        out.numberConfidence = read.confidence;
-      } else if (valid && !clipped && (!number.strong || read.confidence > number.confidence)) {
-        // The two reads disagree: take the more confident one but leave it for review.
-        out.number = normalized;
-        out.numberRaw = read.text;
-        out.numberConfidence = Math.min(read.confidence, 59);
-      } else if (valid && !clipped) {
-        out.numberConfidence = Math.min(number.confidence, 59);
-      }
-    }
+    if (refine) Object.assign(out, await refineNumber(page, number, aspect));
+    else Object.assign(out, {
+      number: number.number, numberRaw: number.raw, numberConfidence: number.confidence,
+      numberZone: pad(number.box, number.box.h * 0.8, number.box.h * 0.35, aspect)
+    });
   }
   if (titleLines.length) {
     const box = union(titleLines.map((line) => line.box));
@@ -268,4 +354,4 @@ async function detectTitleBlock(page, { regions = REGIONS, refine = true } = {})
   return out;
 }
 
-module.exports = { detectTitleBlock, pickNumber, pickTitle, hasTitleLabel, dedupeLines, REGIONS };
+module.exports = { detectTitleBlock, findNumberIn, glyphCandidates, pickNumber, pickTitle, hasTitleLabel, dedupeLines, REGIONS };
