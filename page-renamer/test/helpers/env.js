@@ -6,7 +6,8 @@ const { execFileSync } = require('node:child_process');
 
 function findPowerShell() {
   if (process.env.PRECISE_POWERSHELL) return process.env.PRECISE_POWERSHELL;
-  const candidates = process.platform === 'win32' ? ['powershell.exe', 'pwsh.exe'] : ['pwsh'];
+  // On Windows test with the same (32-bit) Windows PowerShell the tool uses with PlanSwift.
+  const candidates = process.platform === 'win32' ? [require('../../lib/bridge').powershellPath(), 'powershell.exe', 'pwsh.exe'] : ['pwsh'];
   for (const exe of candidates) {
     try {
       execFileSync(exe, ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'], { stdio: 'pipe', timeout: 30000 });

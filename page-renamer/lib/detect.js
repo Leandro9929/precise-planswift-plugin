@@ -75,7 +75,7 @@ function numberCandidates(lines) {
         const box = union(group.map((w) => w.box));
         const before = words.slice(Math.max(0, i - 2), i).map((w) => w.text.toUpperCase()).join(' ');
         found.push({
-          number, strong, box, line,
+          number, strong, box, line, raw: group.map((w) => w.text).join(' '),
           confidence: Math.min(...group.map((w) => w.confidence)),
           refersElsewhere: /\b(SEE|REF|DETAIL|DET|SIM|ON|REV|SECTION|SECT)\.?$/.test(before)
         });
@@ -214,10 +214,11 @@ async function detectTitleBlock(page, { regions = REGIONS, refine = true } = {})
     number = pickNumber(lines, aspect);
   }
   const titleLines = pickTitle(lines, number, aspect);
-  const out = { number: '', title: '', numberZone: null, titleZone: null, numberConfidence: 0, titleConfidence: 0 };
+  const out = { number: '', numberRaw: '', title: '', numberZone: null, titleZone: null, numberConfidence: 0, titleConfidence: 0 };
   if (number) {
     out.numberZone = pad(number.box, number.box.h * 0.8, number.box.h * 0.35, aspect);
     out.number = number.number;
+    out.numberRaw = number.raw;
     out.numberConfidence = number.confidence;
     if (refine) {
       const read = await recognizeZone(page, out.numberZone, 'number');
@@ -227,9 +228,16 @@ async function detectTitleBlock(page, { regions = REGIONS, refine = true } = {})
       const valid = isSheetNumber(normalized) || (!number.strong && isNumericSheet(normalized));
       if (valid && normalized === number.number) {
         out.numberConfidence = Math.max(read.confidence, number.confidence);
+        out.numberRaw = read.confidence >= number.confidence ? read.text : number.raw;
+      } else if (valid && !clipped && read.confidence >= 70 && read.confidence >= number.confidence + 15) {
+        // A clearly better full-resolution read wins outright.
+        out.number = normalized;
+        out.numberRaw = read.text;
+        out.numberConfidence = read.confidence;
       } else if (valid && !clipped && (!number.strong || read.confidence > number.confidence)) {
         // The two reads disagree: take the more confident one but leave it for review.
         out.number = normalized;
+        out.numberRaw = read.text;
         out.numberConfidence = Math.min(read.confidence, 59);
       } else if (valid && !clipped) {
         out.numberConfidence = Math.min(number.confidence, 59);
@@ -248,7 +256,10 @@ async function detectTitleBlock(page, { regions = REGIONS, refine = true } = {})
       const read = await recognizeZone(page, out.titleZone, 'title', { rotations: [0] });
       const reread = cleanTitle(read.text);
       const letters = (t) => (t.match(/[A-Za-z]/g) || []).length;
-      if (reread && letters(reread) >= letters(out.title) && letters(reread) <= letters(out.title) * 1.3) {
+      if (reread === out.title) {
+        out.titleConfidence = Math.max(out.titleConfidence, read.confidence);
+      } else if (reread && letters(reread) >= letters(out.title) && letters(reread) <= letters(out.title) * 1.3
+        && read.confidence >= out.titleConfidence - 5) {
         out.title = reread;
         out.titleConfidence = read.confidence;
       }

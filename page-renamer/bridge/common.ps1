@@ -66,8 +66,10 @@ function Format-Guid([string]$Guid) {
   return ([string]$Guid).Trim().Trim('{', '}').ToUpperInvariant()
 }
 
+$script:ProcessName = if ($env:PRECISE_PLANSWIFT_PROCESS) { $env:PRECISE_PLANSWIFT_PROCESS } else { 'PlanSwift*' }
+
 function Get-PlanSwiftProcesses {
-  return @(Get-Process -Name 'PlanSwift*' -ErrorAction SilentlyContinue)
+  return @(Get-Process -Name $script:ProcessName -ErrorAction SilentlyContinue)
 }
 
 function Get-ProcessCommandLine([int]$Id) {
@@ -79,7 +81,6 @@ function Get-ProcessCommandLine([int]$Id) {
 # before anything is read or written.
 function Connect-PlanSwift {
   $before = Get-PlanSwiftProcesses
-  if ($before.Count -eq 0) { throw 'PlanSwift is not running. Open PlanSwift and the job, then try again.' }
   $app = $null
   $how = ''
   try {
@@ -87,6 +88,10 @@ function Connect-PlanSwift {
     $how = 'running object table'
   } catch { $app = $null }
   if ($null -eq $app) {
+    # Creating the COM object starts PlanSwift when it is not running, so require the process first.
+    if ($before.Count -eq 0) {
+      throw "PlanSwift is not running (no process named $script:ProcessName). Open PlanSwift and the job, then try again."
+    }
     try { $app = New-Object -ComObject $script:ProgId }
     catch {
       $type = [Type]::GetTypeFromCLSID([Guid]$script:ClassId)

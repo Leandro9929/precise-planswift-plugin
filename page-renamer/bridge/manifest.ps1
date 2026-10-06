@@ -1,12 +1,16 @@
 # Read-only: lists the pages of the job that is open in PlanSwift from its data folder.
 # PlanSwift keeps the open job as an alias item (Data\Job\Data.xml) whose Link property points at
 # \Storages\<storage>\Jobs\<job>; each page is a folder with a Data.xml of Class "Page".
+# With -LiveNames, page names are then taken from PlanSwift itself (by GUID), so the list matches
+# what PlanSwift shows even before it has written a change to the job folder.
 param(
   [Parameter(Mandatory = $true)][string]$OutFile,
-  [string]$PlanSwiftRoot = ''
+  [string]$PlanSwiftRoot = '',
+  [switch]$LiveNames
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
+if ($env:PRECISE_BRIDGE_MOCK) { . $env:PRECISE_BRIDGE_MOCK }
 
 function PropertyValue($item, [string]$name) {
   $p = @($item.Properties.Property) | Where-Object { $_.Name -eq $name } | Select-Object -First 1
@@ -78,8 +82,31 @@ try {
     }
   } | Sort-Object order, path)
 
+  $namesFrom = 'files'
+  $liveError = ''
+  if ($LiveNames -and $pages.Count) {
+    try {
+      $connection = Connect-PlanSwift
+      $info = Get-JobPagesItem $connection.App
+      $items = Resolve-Pages $info ([string[]]@($pages | ForEach-Object { $_.id }))
+      $found = 0
+      foreach ($p in $pages) {
+        $item = $items[(Format-Guid $p.id)]
+        if ($null -eq $item) { continue }
+        $p.name = [string](Com-Get $item 'Name')
+        $found++
+      }
+      if ($found -eq $pages.Count) { $namesFrom = 'planswift' }
+      else { $namesFrom = 'mixed'; $liveError = "$($pages.Count - $found) page(s) from the job folder were not found in PlanSwift" }
+    } catch {
+      $liveError = Get-ErrorText $_
+    }
+  }
+
   Write-JsonFile $OutFile ([pscustomobject]@{
     ok = $true
+    namesFrom = $namesFrom
+    liveError = $liveError
     job = ($parts[3..($parts.Count - 1)] -join '\')
     jobGuid = $jobGuid
     jobDir = $jobDir

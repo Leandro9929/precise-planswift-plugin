@@ -32,7 +32,7 @@ async function readPage(file, options) {
     const found = await detectTitleBlock(page);
     if (!found.number) return out;
     out.source = 'auto (box missed)';
-    out.raw = found.number;
+    out.raw = found.numberRaw || found.number;
     out.number = found.number;
     out.numberConfidence = found.numberConfidence;
     out.numberZone = found.numberZone;
@@ -44,15 +44,20 @@ async function readPage(file, options) {
     return out;
   }
   const found = await detectTitleBlock(page);
-  return { ...out, ...found, raw: found.number, source: 'auto' };
+  return { ...out, ...found, raw: found.numberRaw || found.number, source: 'auto' };
 }
 
-function rowWarnings(row, read, options) {
+// Warnings leave a row unchecked for review; notes are shown but do not block.
+function rowWarnings(row, read, options, notes = []) {
   const warnings = [];
   if (!row.number) warnings.push('Sheet number not found');
   else if (!isSheetNumber(row.number)) warnings.push('Unusual sheet number');
   const { corrected } = normalizeNumber(read.raw);
-  if (row.number && corrected) warnings.push(`OCR read "${clean(read.raw)}"; check the correction`);
+  if (row.number && corrected) {
+    const text = `OCR read "${clean(read.raw)}"; corrected to ${row.number}`;
+    if (read.numberConfidence >= 75) notes.push(text);
+    else warnings.push(`${text}; check it`);
+  }
   if (row.number && read.numberConfidence < LOW) warnings.push('Low confidence sheet number');
   if (options.titles && !row.title) warnings.push('Title not found');
   else if (options.titles && row.title && read.titleConfidence < LOW) warnings.push('Low confidence title');
@@ -110,7 +115,8 @@ class ScanJob {
           row.titleZone = read.titleZone;
           row.source = read.source;
           row.newName = buildName(row.number, options.titles ? row.title : '', options.naming);
-          row.warnings = rowWarnings(row, read, options);
+          row.notes = [];
+          row.warnings = rowWarnings(row, read, options, row.notes);
         } catch (e) {
           row.error = /unsupported image format|Input file contains unsupported|pdf/i.test(e.message)
             ? 'Page image format not supported (PDF page?)'

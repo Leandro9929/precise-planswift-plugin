@@ -14,7 +14,7 @@ const { Bridge } = require('./lib/bridge');
 const { Store, jobKey } = require('./lib/store');
 const { ScanJob } = require('./lib/scan');
 const { orderRenames, undoPlan, restoreAllPlan } = require('./lib/plan');
-const { clean, validateName, buildName, TEMPLATES } = require('./lib/naming');
+const { clean, validateName, TEMPLATES } = require('./lib/naming');
 
 const base = __dirname;
 const VERSION = require('./package.json').version;
@@ -69,7 +69,7 @@ function createApp({ dataDir = resolveDataDir(), token = crypto.randomBytes(24).
 
   function publicManifest(m) {
     return {
-      job: m.job, jobKey: m.jobKey, link: m.link, version: VERSION,
+      job: m.job, jobKey: m.jobKey, link: m.link, version: VERSION, namesFrom: m.namesFrom, liveError: m.liveError,
       pages: m.pages.map((p) => ({ id: p.id, name: p.name, order: p.order, hasImage: !!p.image }))
     };
   }
@@ -83,10 +83,15 @@ function createApp({ dataDir = resolveDataDir(), token = crypto.randomBytes(24).
       const latest = await loadManifest();
       const ordered = orderRenames(changes, latest.pages);
       const run = store.createRun(latest, { kind, label, changes: ordered, undoes });
-      const outcome = await bridge.apply(ordered.map((c) => ({ id: c.id, oldName: c.oldName, newName: c.newName })), {
-        label: `Precise Page Renamer: ${label}`,
-        checkTakeoff: settings().checkTakeoff !== false
-      });
+      let outcome;
+      try {
+        outcome = await bridge.apply(ordered.map((c) => ({ id: c.id, oldName: c.oldName, newName: c.newName })), {
+          label: `Precise Page Renamer: ${label}`,
+          checkTakeoff: settings().checkTakeoff !== false
+        });
+      } catch (e) {
+        outcome = { report: null, progress: [], error: e.message };
+      }
       store.finishRun(run, outcome);
       if (undoes && run.status === 'applied') store.markUndone(latest.jobKey, undoes, run.runId);
       try { await loadManifest(); } catch { /* keep the outcome even if the refresh fails */ }
@@ -119,11 +124,6 @@ function createApp({ dataDir = resolveDataDir(), token = crypto.randomBytes(24).
       if (typeof body.checkTakeoff === 'boolean') next.checkTakeoff = body.checkTakeoff;
       fs.writeFileSync(settingsFile, JSON.stringify(next, null, 2));
       return next;
-    },
-
-    'POST /api/preview-name': async (body) => {
-      const name = buildName(body.number, body.title, { template: body.template, titleCase: body.titleCase });
-      return { name, problem: name ? validateName(name) : 'No name' };
     },
 
     'POST /api/detect': async (body) => {
@@ -194,6 +194,8 @@ function createApp({ dataDir = resolveDataDir(), token = crypto.randomBytes(24).
       }
       if (!changes.length) throw Error('Check at least one page whose name changes.');
       const { run, ok } = await execute(changes, { kind: 'rename', label: `Rename ${changes.length} page(s)` });
+      // Keep the review session usable for further corrections.
+      for (const c of run.changes) if (rows.has(c.id)) rows.get(c.id).oldName = c.currentName;
       return { ok, run: runSummary(run) };
     },
 
@@ -249,6 +251,7 @@ function createApp({ dataDir = resolveDataDir(), token = crypto.randomBytes(24).
       try {
         latest = await loadManifest();
         report.steps.push({ name: 'Job folder', ok: true, detail: `${latest.job}: ${latest.pages.length} pages, ${latest.pages.filter((p) => p.image).length} with images (${latest.planSwiftRoot})` });
+        report.steps.push({ name: 'Live page names', ok: latest.namesFrom === 'planswift', detail: latest.namesFrom === 'planswift' ? 'Names read from PlanSwift' : `Names from the job folder. ${latest.liveError}` });
       } catch (e) {
         report.steps.push({ name: 'Job folder', ok: false, detail: e.message });
       }
@@ -258,7 +261,9 @@ function createApp({ dataDir = resolveDataDir(), token = crypto.randomBytes(24).
       } catch (e) {
         report.steps.push({ name: 'OCR engine', ok: false, detail: e.message });
       }
-      const probe = await bridge.probe(latest ? latest.pages : []);
+      let filePages = [];
+      try { filePages = (await bridge.manifest(settings().planSwiftRoot, { liveNames: false })).pages; } catch { /* reported above */ }
+      const probe = await bridge.probe(filePages);
       report.steps.push(...(probe.steps || []));
       report.samplePages = probe.samplePages || [];
       report.firstPageProperties = probe.firstPageProperties || null;
@@ -293,6 +298,7 @@ function createApp({ dataDir = resolveDataDir(), token = crypto.randomBytes(24).
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
+      if (url.pathname === '/favicon.ico') { res.writeHead(204); return res.end(); }
       const host = String(req.headers.host || '').replace(/:\d+$/, '');
       if (!['127.0.0.1', 'localhost'].includes(host)) return send(res, 403, { error: 'Forbidden' });
       if (req.headers['x-page-renamer-token'] !== token && url.searchParams.get('token') !== token) {
@@ -305,6 +311,11 @@ function createApp({ dataDir = resolveDataDir(), token = crypto.randomBytes(24).
           'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'"
         });
         return res.end(html);
+      }
+      if (req.method === 'GET' && url.pathname === '/naming.js') {
+        // The browser uses the same naming rules as the server.
+        const code = fs.readFileSync(path.join(base, 'lib', 'naming.js'), 'utf8');
+        return send(res, 200, `(function () {\nconst module = { exports: {} };\n${code}\nwindow.Naming = module.exports;\n})();\n`, 'text/javascript; charset=utf-8');
       }
       if (req.method === 'GET' && assets[url.pathname]) {
         const [file, type] = assets[url.pathname];

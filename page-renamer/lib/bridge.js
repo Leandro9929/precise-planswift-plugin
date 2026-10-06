@@ -63,8 +63,9 @@ class Bridge {
     });
   }
 
-  async manifest(planSwiftRoot) {
+  async manifest(planSwiftRoot, { liveNames = true } = {}) {
     const args = planSwiftRoot ? ['-PlanSwiftRoot', planSwiftRoot] : [];
+    if (liveNames) args.push('-LiveNames');
     const { report, error } = await this.run('manifest.ps1', args, 60000);
     if (!report || !report.ok) throw Error((report && report.error) || error || 'PlanSwift job could not be read.');
     report.pages = Array.isArray(report.pages) ? report.pages : (report.pages ? [report.pages] : []);
