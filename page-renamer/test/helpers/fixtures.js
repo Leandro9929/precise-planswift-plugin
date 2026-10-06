@@ -103,6 +103,47 @@ function cloudStrip(W, H, number, title) {
   ].join('');
 }
 
+// Modelled on the Composto Residence set: narrow right strip, rotated project name, grey bands,
+// an issue stamp ("CHECK SET" / "PERMIT RE-SUBMISSION") above the title, the title directly above
+// the number, and drawing content (level lines, cabinet doors, grey fills) up to the strip.
+function stampStrip(W, H, number, title, stamp = ['PERMIT', 'RE-SUBMISSION']) {
+  const x = W * 0.905;
+  const w = W * 0.08;
+  const s = H / 2400;
+  const titleLines = Array.isArray(title) ? title : [title];
+  const band = (y) => `<rect x="${x}" y="${y}" width="${w}" height="${16 * s}" fill="#666"/>`;
+  const out = [
+    `<rect x="${W * 0.04}" y="${H * 0.02}" width="${W * 0.012}" height="${H * 0.96}" fill="#666"/>`,
+    text(x + 60 * s, H * 0.46, 64 * s, 'Composto Residence', `font-weight="bold" transform="rotate(-90 ${x + 60 * s} ${H * 0.46})"`),
+    text(x + 120 * s, H * 0.46, 20 * s, '1813 W. 14th Street Houston, Texas 77008', `transform="rotate(-90 ${x + 120 * s} ${H * 0.46})"`),
+    band(H * 0.57),
+    text(x + 4 * s, H * 0.59, 14 * s, 'Document Date:'),
+    text(x + 4 * s, H * 0.6, 12 * s, 'Mar 2026'),
+    text(x + 4 * s, H * 0.615, 14 * s, 'Document Phase:'),
+    text(x + 4 * s, H * 0.625, 12 * s, 'Construction Documents'),
+    band(H * 0.635),
+    text(x + 4 * s, H * 0.655, 10 * s, 'rev   date   remark'),
+    ...stamp.map((line, i) => text(x + 4 * s, H * 0.71 + i * 44 * s, (stamp.length > 1 && line.length > 8 ? 26 : 44) * s, line, 'font-weight="bold"')),
+    band(H * 0.795),
+    ...titleLines.map((line, i) => text(x + 4 * s, H * 0.835 + i * 30 * s, 26 * s, line)),
+    text(x + 10 * s, H * 0.935, 64 * s, number, 'font-weight="bold"'),
+    band(H * 0.955),
+    // Level lines with markers and small labels running up to the strip.
+    ...[0.62, 0.7, 0.78, 0.86].map((f) => `<line x1="${W * 0.55}" y1="${H * f}" x2="${W * 0.875}" y2="${H * f}" stroke="#000" stroke-width="${2 * s}" stroke-dasharray="${30 * s} ${8 * s} ${6 * s} ${8 * s}"/>`
+      + `<circle cx="${W * 0.88}" cy="${H * f}" r="${8 * s}" fill="#000"/>`
+      + text(W * 0.86, H * f - 8 * s, 11 * s, 'T.O. PLATE') + text(W * 0.86, H * f + 18 * s, 11 * s, `${Math.round(f * 30)}'-1 1/2"`)),
+    // Cabinet doors in a row (shapes that look like a row of big letters).
+    ...Array.from({ length: 6 }, (_, i) => `<rect x="${W * (0.56 + i * 0.045)}" y="${H * 0.66}" width="${W * 0.035}" height="${H * 0.12}" fill="none" stroke="#000" stroke-width="${3 * s}"/>`
+      + `<line x1="${W * (0.59 + i * 0.045)}" y1="${H * 0.7}" x2="${W * (0.59 + i * 0.045)}" y2="${H * 0.73}" stroke="#000" stroke-width="${4 * s}"/>`),
+    `<rect x="${W * 0.6}" y="${H * 0.82}" width="${W * 0.2}" height="${H * 0.1}" fill="#888"/>`,
+    `<circle cx="${W * 0.7}" cy="${H * 0.95}" r="${18 * s}" fill="none" stroke="#000" stroke-width="${2 * s}"/>`,
+    text(W * 0.7 - 6 * s, H * 0.95 - 3 * s, 12 * s, '1'),
+    text(W * 0.7 - 14 * s, H * 0.95 + 13 * s, 10 * s, number),
+    text(W * 0.72, H * 0.95, 18 * s, 'SOUTH ELEVATION')
+  ];
+  return out.join('');
+}
+
 function bottomStrip(W, H, number, title) {
   const y = H * 0.875;
   const s = H / 2400;
@@ -136,7 +177,10 @@ function cornerBox(W, H, number, title) {
   ].join('');
 }
 
-const LAYOUTS = { vertical: verticalStrip, bottom: bottomStrip, corner: cornerBox, cloud: cloudStrip };
+const LAYOUTS = {
+  vertical: verticalStrip, bottom: bottomStrip, corner: cornerBox, cloud: cloudStrip,
+  stamp: stampStrip, check: (W, H, n, t) => stampStrip(W, H, n, t, ['CHECK', 'SET'])
+};
 
 function sheetSvg({ layout = 'vertical', number, title, width = 3600, height = 2400 }) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`

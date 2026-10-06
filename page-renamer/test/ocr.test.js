@@ -27,6 +27,8 @@ async function sheet(name, options, effect) {
 const letters = (s) => s.replace(/[^A-Z0-9&]/gi, '').toUpperCase();
 
 const cases = [
+  ['stamp strip: issue stamp above the title, drawing up to the strip', { layout: 'stamp', number: 'A3.3', title: ['BUILDING', 'SECTIONS'], width: 7200, height: 4800 }],
+  ['"CHECK SET" stamp, mixed-case title, cabinet doors', { layout: 'check', number: 'A5.2', title: ['Interior', 'Elevations'], width: 7200, height: 4800 }],
   ['vertical strip, two-line title', { layout: 'vertical', number: 'A1.1', title: ['FIRST FLOOR', 'PLAN'] }],
   ['bottom strip', { layout: 'bottom', number: 'M2.01', title: 'MECHANICAL ROOF PLAN' }],
   ['corner box without labels', { layout: 'corner', number: 'E-3', title: 'LIGHTING PLAN LEVEL 2' }],
@@ -44,6 +46,8 @@ for (const [label, options, effect] of cases) {
     const title = [].concat(options.title).join(' ');
     assert.equal(found.number, options.number);
     assert.equal(letters(found.title), letters(title));
+    // Zeros read as letter O are corrected but left for review on purpose.
+    if (!/O/.test(found.numberRaw)) assert.ok(found.numberConfidence >= 60, `number confidence ${found.numberConfidence}`);
     assert.ok(found.numberZone && found.titleZone);
   });
 }

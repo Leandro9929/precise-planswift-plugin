@@ -10,6 +10,7 @@ A local tool that reads the printed sheet number and sheet title off each PlanSw
 - Reads numbers drawn inside revision clouds, boxes or grey bands and next to delta tags (the number's own glyphs are isolated before OCR); never takes a feet-inch dimension (`9'-9"`) as a sheet number.
 - Fixes common OCR look-alikes (`AO.2` → `A0.2`, `A-1O1` → `A-101`, border lines read as `|`/`1`) and reports every correction.
 - In box mode, if a box misses on a sheet, only the area around the box is searched, so drawing text is never used.
+- Titles are taken from the title block's own column (the text directly above the number, or under a "SHEET TITLE" label); issue stamps such as "CHECK SET" or "PERMIT RE-SUBMISSION" and garbled low-confidence readings are ignored.
 - Review table: edit the sheet number, title or full name; shows the image crop each value was read from, OCR confidence, warnings, duplicates and names PlanSwift or Windows cannot store. Rows with warnings start unchecked.
 - Name format: `A1.1 - FLOOR PLAN`, `A1.1 FLOOR PLAN`, number only or title only; titles as printed, Title Case or UPPERCASE.
 - CSV export/import for large sets (edit names in Excel, import back by page ID).

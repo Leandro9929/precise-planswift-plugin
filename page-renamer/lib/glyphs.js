@@ -133,7 +133,8 @@ function isolateNumber(gray, w, h) {
 // that page-level OCR misses (inside clouds or heavy boxes). Sizes are in pixels of the buffer.
 function glyphGroups(gray, w, h, { minH, maxH }) {
   const { comps } = components(gray, w, h);
-  const glyphs = comps.filter((c) => glyphLike(c) && !c.border && c.h >= minH && c.h <= maxH && c.w <= maxH * 1.6)
+  // Sheet numbers are bold; outlines of drawn shapes are mostly empty.
+  const glyphs = comps.filter((c) => glyphLike(c) && c.fill >= 0.2 && !c.border && c.h >= minH && c.h <= maxH && c.w <= maxH * 1.6)
     .sort((a, b) => a.x0 - b.x0);
   const groups = [];
   const used = new Set();

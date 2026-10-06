@@ -18,6 +18,11 @@ test('normalizes OCR sheet numbers and flags look-alike corrections', () => {
   }
 });
 
+test('tells OCR look-alike readings apart from different numbers', () => {
+  assert.ok(n.lookAlike('A5.2', 'AS.2') && n.lookAlike('A0.1', 'AO.1') && n.lookAlike('B1.1', '81.1'));
+  assert.ok(!n.lookAlike('A5.2', 'A5.3') && !n.lookAlike('A5.2', 'A5.2') && !n.lookAlike('A5.2', 'A5.21'));
+});
+
 test('recognizes sheet number shapes', () => {
   for (const s of ['A1.1', 'A-101', 'A101', 'FP-2.01', 'M2.1A', 'E0.01', 'S-1', 'C1.0', 'ID-1.1']) assert.ok(n.isSheetNumber(s), s);
   for (const s of ['1/4', '2026-041', 'SCALE', 'ABCD1', '']) assert.ok(!n.isSheetNumber(s), s);

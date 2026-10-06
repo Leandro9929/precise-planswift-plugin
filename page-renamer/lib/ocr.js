@@ -3,7 +3,7 @@
 const path = require('node:path');
 const sharp = require('sharp');
 const { createWorker, PSM } = require('tesseract.js');
-const { clean, normalizeNumber, isSheetNumber } = require('./naming');
+const { clean, normalizeNumber, isSheetNumber, lookAlike } = require('./naming');
 const { isolateNumber } = require('./glyphs');
 
 const base = path.join(__dirname, '..');
@@ -184,7 +184,7 @@ function chooseNumber(reads) {
     const stray = best.number.length === other.number.length + 1 && best.number.endsWith(other.number) && /^[A-Z]/.test(best.number);
     if (longer || stray) best = other;
   }
-  const rivals = ranked.filter((v) => v !== best && v.score >= best.score * 0.5
+  const rivals = ranked.filter((v) => v !== best && v.score >= best.score * 0.5 && !lookAlike(v.number, best.number)
     && !(best.number.endsWith(v.number) || v.number.endsWith(best.number) || best.number.startsWith(v.number)));
   let confidence = best.confidence ?? 55;
   if (rivals.length) confidence = Math.min(confidence, 59);

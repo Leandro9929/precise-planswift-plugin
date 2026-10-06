@@ -61,7 +61,7 @@ function normalizeNumber(raw) {
     .replace(/\b(?:SHEET|SHT|DWG|DRAWING|NUMBER|NUM|NO)\b\.?\s*:?/g, ' ')
     .replace(/\s*([.\-–—])\s*/g, '$1')
     .trim();
-  const lookAlike = lowerL.test(raw1);
+  const hadLowerL = lowerL.test(raw1);
   // A lone "|" or "I" beside the number is usually a title-block border line, and anything with a
   // feet mark is a dimension (9'-9", 12'-0"), never a sheet number.
   const tokens = text.split(/\s+/).filter((t) => !/^[|I]$/.test(t) && !/['’′`]/.test(t))
@@ -78,7 +78,16 @@ function normalizeNumber(raw) {
     }
   }
   const result = best || fixToken(tokens.join(''));
-  return { number: result.number, corrected: result.corrected || lookAlike };
+  return { number: result.number, corrected: result.corrected || hadLowerL };
+}
+
+const LOOK_ALIKE = new Set(['S5', '5S', 'O0', '0O', 'I1', '1I', 'B8', '8B', 'Z2', '2Z', 'G6', '6G', 'D0', '0D', 'Q0', '0Q']);
+
+// True when two readings differ only by characters OCR confuses (A5.2 / AS.2).
+function lookAlike(a, b) {
+  if (!a || !b || a === b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i] && !LOOK_ALIKE.has(a[i] + b[i])) return false;
+  return true;
 }
 
 function isSheetNumber(s) {
@@ -164,6 +173,6 @@ function nameKey(name) {
 
 module.exports = {
   MAX_NAME, SHEET_RE, TEMPLATES,
-  clean, normalizeNumber, isSheetNumber, isNumericSheet, cleanTitle, applyCase,
+  clean, normalizeNumber, isSheetNumber, lookAlike, isNumericSheet, cleanTitle, applyCase,
   buildName, sanitizeName, validateName, nameKey, templateFor
 };

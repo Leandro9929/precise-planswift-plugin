@@ -1,6 +1,6 @@
 {
   "name": "precise-page-renamer",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "description": "Local title-block OCR and reviewed PlanSwift page renaming",
   "main": "server.js",

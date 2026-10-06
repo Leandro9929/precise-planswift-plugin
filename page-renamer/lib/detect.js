@@ -6,7 +6,7 @@
 const sharp = require('sharp');
 const { recognizeWords, recognizeZone, cropGray, region } = require('./ocr');
 const { glyphGroups } = require('./glyphs');
-const { normalizeNumber, isSheetNumber, isNumericSheet, cleanTitle, clean } = require('./naming');
+const { normalizeNumber, isSheetNumber, isNumericSheet, cleanTitle, clean, lookAlike } = require('./naming');
 
 const REGIONS = [
   { x: 0.5, y: 0.55, w: 0.5, h: 0.45 },   // bottom-right corner: vertical strips and corner blocks
@@ -17,6 +17,8 @@ const REGIONS = [
 const NUMBER_LABEL = /^(SHEET|SHT|DWG|DRAWING|DRAWN|PAGE|NO|NO\.|NUMBER|NUM|#)[:.]?$/i;
 const TITLE_LABEL = /\b(SHEET|DRAWING|DWG)\s*(TITLE|NAME|DESCRIPTION)\b|^TITLE[:.]?$/i;
 const OTHER_LABEL = /\b(PROJECT|JOB|CLIENT|OWNER|ARCHITECT|ENGINEER|CONSULTANT|ADDRESS|DATE|SCALE|DRAWN|CHECKED|APPROVED|DESIGNED|REVISION|REVISIONS|REV|ISSUE|ISSUED|SEAL|STAMP|PHASE|FILE|PLOT|PERMIT|NORTH|KEY ?PLAN|COPYRIGHT|SUBMITTAL|BID|CONSTRUCTION|SET|NOT FOR)\b/i;
+// Issue stamps printed in title blocks; never a sheet title.
+const STATUS = /^(?:(?:CHECK|PERMIT|BID|PROGRESS|REVIEW|ISSUE|PRICING|CONSTRUCTION|CD|DD|SD)\s+SET|PERMIT|RE-?SUBMISSION|(?:NOT\s+)?FOR\s+(?:CONSTRUCTION|PERMIT|REVIEW|BID|PRICING)|PRELIMINARY|DRAFT|ISSUED\s+FOR\b.*|PERMIT\s+RE-?SUBMISSION|CHECK|SET)$/i;
 const NOISE_TITLE = /^(?:[\d\s./\-:'"=]+|.*\b(?:SCALE|DATE|DRAWN|CHECKED|PROJECT|JOB|COPYRIGHT|REVISION|PHONE|FAX|EMAIL|WWW\.|SUITE|STREET|AVENUE|AVE\.?|BLVD|ROAD|RD\.?|INC\.?|LLC|SEAL)\b.*)$/i;
 
 function union(boxes) {
@@ -122,7 +124,8 @@ function pickNumber(lines, aspect = 1, extra = []) {
       + 1.5 * ((c.box.x + c.box.w) + (c.box.y + c.box.h)) / 2
       + c.confidence / 100
       - (c.refersElsewhere ? 3 : 0)
-      - (c.line.words.length > 4 ? 1 : 0);
+      - (c.line.words.length > 4 ? 1 : 0)
+      - (c.confidence < 40 ? 3 : 0);
   }
   candidates.sort((a, b) => b.score - a.score);
   let best = candidates[0];
@@ -141,10 +144,14 @@ function isLabelLine(line) {
 }
 
 // relaxed: for lines continuing a title, where a word like "SHEET" ("COVER / SHEET") is part of it.
+function lineConfidence(line) {
+  return line.words.reduce((s, w) => s + w.confidence, 0) / Math.max(1, line.words.length);
+}
+
 function usableTitleLine(line, number, relaxed = false) {
   const text = clean(line.text);
   if (!text || text.length < 3) return false;
-  if (NOISE_TITLE.test(text) || (!relaxed && isLabelLine(line))) return false;
+  if (NOISE_TITLE.test(text) || STATUS.test(text) || (!relaxed && isLabelLine(line))) return false;
   if (!relaxed && line.words.every((w) => NUMBER_LABEL.test(w.text))) return false;
   if (number && line.words.some((w) => w.box === number.box || normalizeNumber(w.text).number === number.number)) return false;
   const letters = (text.match(/[A-Za-z]/g) || []).length;
@@ -167,6 +174,21 @@ function growTitle(first, pool) {
   return picked;
 }
 
+// From one line of a title, climbs to its first line and gathers the lines below it.
+function stackTitle(seed, pool, continuation) {
+  let top = seed;
+  for (;;) {
+    const up = pool.concat(continuation).find((line) => line !== top
+      && Math.abs(line.box.h - top.box.h) < top.box.h * 0.35
+      && top.box.y - (line.box.y + line.box.h) >= -top.box.h * 0.2
+      && top.box.y - (line.box.y + line.box.h) < top.box.h * 1.1
+      && hOverlap(line.box, top.box) > 0);
+    if (!up) break;
+    top = up;
+  }
+  return growTitle(top, continuation);
+}
+
 function hasTitleLabel(lines) {
   return lines.some((line) => TITLE_LABEL.test(line.text));
 }
@@ -185,16 +207,34 @@ function pickTitle(lines, number, aspect = 1) {
     if (below.length) {
       const tallest = Math.max(...below.map((line) => line.box.h));
       const first = below.find((line) => line.box.h >= tallest * 0.7);
-      return growTitle(first, continuation);
+      return { path: 'label', lines: growTitle(first, continuation) };
     }
     const inline = clean(labelLine.text.replace(TITLE_LABEL, ''));
-    if (inline.length >= 3) return [{ ...labelLine, text: inline }];
+    if (inline.length >= 3) return { path: 'label', lines: [{ ...labelLine, text: inline }] };
   }
-  // 2. Largest descriptive text close to the sheet number.
-  const near = usable.filter((line) => (!number || (
+  const readable = usable.filter((line) => lineConfidence(line) >= 55);
+  if (number) {
+    const nb = number.box;
+    const reach = nb.w * 0.6;
+    // 2. The nearest text directly above the number in its own column (vertical title strips).
+    const above = readable.filter((line) => line.box.y + line.box.h <= nb.y + nb.h * 0.3
+      && nb.y - (line.box.y + line.box.h) < 0.12
+      && line.box.x >= nb.x - reach && line.box.x + line.box.w <= nb.x + nb.w + reach * 2
+      && line.box.h >= nb.h * 0.2);
+    if (above.length) return { path: 'above', lines: stackTitle(above.reduce((a, b) => (b.box.y + b.box.h > a.box.y + a.box.h ? b : a)), above, continuation) };
+    // 3. The nearest text to its left on the same row (bottom title strips).
+    const left = readable.filter((line) => line.box.x + line.box.w <= nb.x + nb.w * 0.1
+      && Math.abs((line.box.y + line.box.h / 2) - (nb.y + nb.h / 2)) < nb.h * 2
+      && nb.x - (line.box.x + line.box.w) < 0.3
+      && line.box.h >= nb.h * 0.35);
+    if (left.length) return { path: 'left', lines: stackTitle(left.reduce((a, b) => (b.box.x + b.box.w > a.box.x + a.box.w ? b : a)), left, continuation) };
+  }
+  // 4. Largest descriptive text close to the sheet number.
+  const nearPool = readable.length ? readable : usable;
+  const near = nearPool.filter((line) => (!number || (
     Math.abs(line.box.x + line.box.w / 2 - (number.box.x + number.box.w / 2)) < 0.3
     && Math.abs(line.box.y - number.box.y) < 0.3)));
-  if (!near.length) return [];
+  if (!near.length) return { path: 'none', lines: [] };
   const tallest = Math.max(...near.map((line) => line.box.h));
   const big = near.filter((line) => line.box.h >= tallest * 0.75);
   const first = big.sort((a, b) => {
@@ -215,12 +255,12 @@ function pickTitle(lines, number, aspect = 1) {
     top = above;
   }
   const pool = near.concat(continuation.filter((line) => !near.includes(line))).sort((a, b) => a.box.y - b.box.y);
-  return growTitle(top, pool);
+  return { path: 'near', lines: growTitle(top, pool) };
 }
 
 // Sheet numbers drawn inside revision clouds, boxes or bands are often skipped by page-level
 // OCR. Rows of large, similar glyphs are found from the image itself and read one by one.
-async function glyphCandidates(page, zone, { minFrac = 0.012, maxFrac = 0.07, limit = 5 } = {}) {
+async function glyphCandidates(page, zone, { minFrac = 0.012, maxFrac = 0.05, limit = 5 } = {}) {
   const r = region(page, zone);
   const { data, w, h } = cropGray(page, r);
   let gray = data;
@@ -251,7 +291,8 @@ async function glyphCandidates(page, zone, { minFrac = 0.012, maxFrac = 0.07, li
     };
     const read = await recognizeZone(page, pad(box, box.h * 0.6, box.h * 0.3, aspect), 'number', { rotations: [0] });
     const { number } = normalizeNumber(read.text);
-    if (!isSheetNumber(number)) continue;
+    // Rows of drawn shapes (cabinet doors, windows) read as low-confidence letters.
+    if (!isSheetNumber(number) || read.confidence < 60) continue;
     found.push({ number, strong: true, box, line: { words: [], text: number }, confidence: read.confidence, refersElsewhere: false, raw: read.text });
   }
   return found;
@@ -271,7 +312,14 @@ async function refineNumber(page, number, aspect) {
   // ...and a longer re-read ("M2.01" for "M2.0") means the first read was cut short.
   const completes = normalized.length > number.number.length && normalized.startsWith(number.number)
     && /^[.\-]?\d/.test(normalized.slice(number.number.length));
-  if (valid && completes && read.confidence >= 60) {
+  if (valid && lookAlike(normalized, number.number)) {
+    // Same characters up to OCR look-alikes: the more confident reading decides.
+    if (read.confidence > number.confidence) {
+      out.number = normalized;
+      out.numberRaw = read.text;
+    }
+    out.numberConfidence = Math.max(read.confidence, number.confidence);
+  } else if (valid && completes && read.confidence >= 60) {
     out.number = normalized;
     out.numberRaw = read.text;
     out.numberConfidence = read.confidence;
@@ -321,7 +369,17 @@ async function detectTitleBlock(page, { regions = REGIONS, refine = true } = {})
     lines = dedupeLines(lines.concat(await recognizeWords(page, REGIONS[1], { rotate: 90 })));
     number = pickNumber(lines, aspect, extra);
   }
-  const titleLines = pickTitle(lines, number, aspect);
+  let pick = pickTitle(lines, number, aspect);
+  if (number && (pick.path === 'near' || pick.path === 'none')) {
+    // Read the column above the number at full resolution; titles sit right there in most strips.
+    const nb = number.box;
+    const x = Math.max(0, nb.x - nb.w * 0.6);
+    const y = Math.max(0, nb.y - 0.1);
+    const column = { x, y, w: Math.min(1, nb.x + nb.w * 1.6) - x, h: Math.min(1, nb.y + nb.h * 0.3) - y };
+    const again = pickTitle(dedupeLines(lines.concat(await recognizeWords(page, column))), number, aspect);
+    if (again.path === 'above') pick = again;
+  }
+  const titleLines = pick.lines;
   const out = { number: '', numberRaw: '', title: '', numberZone: null, titleZone: null, numberConfidence: 0, titleConfidence: 0 };
   if (number) {
     if (refine) Object.assign(out, await refineNumber(page, number, aspect));
