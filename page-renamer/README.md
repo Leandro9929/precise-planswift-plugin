@@ -25,7 +25,7 @@ Renaming sets only the page item's `Name` through PlanSwift's COM interface; job
 2. Finds each page by its **GUID** under the open job's `\Job\Pages` and checks its current name.
 3. Connects to the PlanSwift that is already open. It never starts PlanSwift, and if Windows starts a second copy (PlanSwift and the tool running at different permission levels) it closes that copy and stops without changing anything.
 4. After each rename, reads the name and GUID back from PlanSwift.
-5. After the batch, compares every other property of each renamed page (scale and so on) and the quantity of every takeoff item (up to 4,000 items) with the values from before.
+5. After the batch, compares the other properties (scale and so on) of the first renamed pages and the quantities of a sample of takeoff items (up to 400 items or 15 seconds) with the values from before. Every page is renamed by the same call, so a sample shows whether renaming touches anything else; the checks are kept short because each value is a separate request to PlanSwift and quantities can trigger recalculation.
 6. If any check fails, or PlanSwift raises an error part-way, it sets the already-renamed pages back to their previous names and reports which pages, if any, could not be set back.
 
 Page GUIDs, scales, measurements and takeoff therefore stay with each page; the checks in steps 4 and 5 confirm it on every run.
@@ -69,6 +69,7 @@ PlanSwift's Plugins tab supports Shell Execute, Executable and Script Code plugi
 | "PlanSwift is not running (no process named PlanSwift*)" | PlanSwift is closed, or its program has a different name. Check the name in Task Manager → Details and start the tool with `set PRECISE_PLANSWIFT_PROCESS=<name without .exe>` before `node server.js`. |
 | "Page names were read from the job folder…" | PlanSwift did not answer the live name check; renaming still verifies every page in PlanSwift first. Run **Check PlanSwift connection**. |
 | "…was renamed … since it was read" | Read the sheets again; someone renamed the page in the meantime. |
+| "PlanSwift did not answer within … It stopped while …" | PlanSwift was busy or waiting on something (an open dialog, cloud sync). Nothing after that step ran. Check PlanSwift for a dialog, then run **Check PlanSwift connection** (it reports how fast PlanSwift answers) and try again; History shows how long each step took. If it stopped while reading takeoff quantities, turn that check off under **Settings**. |
 | A run shows **partial** or **uncertain** | Open the run in History: each page shows its last confirmed name. Check those pages in PlanSwift; **Undo this run** restores the pages that still carry the run's names. |
 
 ## Files

@@ -81,13 +81,17 @@ function rowWarnings(row, read, options, notes = []) {
 function markDuplicates(rows, pages) {
   const counts = new Map();
   for (const r of rows) if (r.newName) counts.set(nameKey(r.newName), (counts.get(nameKey(r.newName)) || 0) + 1);
+  // Two sheets with one number is almost always a misread, even when the titles differ.
+  const numbers = new Map();
+  for (const r of rows) if (r.number) numbers.set(r.number, (numbers.get(r.number) || 0) + 1);
   const scanned = new Set(rows.map((r) => r.id));
   const others = new Map(pages.filter((p) => !scanned.has(p.id)).map((p) => [nameKey(p.name), p]));
   for (const r of rows) {
     if (!r.newName) continue;
     const key = nameKey(r.newName);
-    const dupes = r.warnings.filter((w) => !/^Duplicate|^Already used/.test(w));
+    const dupes = r.warnings.filter((w) => !/^Duplicate|^Already used|^Same sheet number/.test(w));
     if (counts.get(key) > 1) dupes.push('Duplicate proposed name');
+    else if (r.number && numbers.get(r.number) > 1) dupes.push('Same sheet number as another sheet');
     else if (others.has(key)) dupes.push(`Already used by page "${others.get(key).name}"`);
     r.warnings = dupes;
     r.apply = !r.error && !r.warnings.length && r.newName !== r.oldName;

@@ -107,7 +107,7 @@ function createApp({ dataDir = resolveDataDir(), token = crypto.randomBytes(24).
     return {
       runId: run.runId, kind: run.kind, label: run.label, created: run.created, status: run.status,
       error: run.error, undone: run.undone, undoes: run.undoes, count: run.changes.length, counts,
-      changes: run.changes, checks: run.checks
+      changes: run.changes, checks: run.checks, timings: run.timings || []
     };
   }
 
@@ -198,6 +198,8 @@ function createApp({ dataDir = resolveDataDir(), token = crypto.randomBytes(24).
       for (const c of run.changes) if (rows.has(c.id)) rows.get(c.id).oldName = c.currentName;
       return { ok, run: runSummary(run) };
     },
+
+    'GET /api/progress': async () => bridge.progress(),
 
     'GET /api/history': async () => {
       const latest = manifest || await loadManifest();

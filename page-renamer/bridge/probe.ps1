@@ -35,6 +35,10 @@ try {
     }
   }
   Step 'Pages' $true ("{0} top-level item(s) under Pages" -f $count)
+  $speed = [Diagnostics.Stopwatch]::StartNew()
+  for ($i = 0; $i -lt 20; $i++) { [void](Com-TryGet $info.Pages 'ChildCount' @() 0) }
+  $perCall = $speed.Elapsed.TotalMilliseconds / 20
+  Step 'PlanSwift response' ($perCall -lt 100) ("{0:N1} ms per request" -f $perCall)
   $report.samplePages = $children
 
   if ($GuidsFile -and (Test-Path -LiteralPath $GuidsFile)) {
@@ -57,8 +61,9 @@ try {
       }
     }
   }
+  $takeoffClock = [Diagnostics.Stopwatch]::StartNew()
   $fp = Get-TakeoffFingerprint $app $info.RootPath
-  Step 'Takeoff check' $true ("{0} takeoff items fingerprinted{1}" -f $fp.Items.Count, $(if ($fp.Complete) { '' } else { ' (capped)' }))
+  Step 'Takeoff check' $true ("{0} takeoff items read in {1:N1} s{2}" -f $fp.Items.Count, $takeoffClock.Elapsed.TotalSeconds, $(if ($fp.Complete) { '' } else { ' (sample; limit reached)' }))
   $report.ok = (@($steps | Where-Object { -not $_.ok }).Count -eq 0)
 } catch {
   $report.error = Get-ErrorText $_

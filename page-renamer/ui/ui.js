@@ -445,6 +445,7 @@ async function applyChecked() {
   if (!(await openDialog({ title: `Rename ${entries.length} page${entries.length === 1 ? '' : 's'}?`, body, ok: 'Rename in PlanSwift', cancel: 'Cancel' }))) return;
   $('applyBtn').disabled = true;
   setStatus('applyStatus', 'Checking pages in PlanSwift and renaming…');
+  const stopWatching = watchProgress();
   try {
     const out = await post('/api/apply', { scanId, entries });
     const run = out.run;
@@ -463,8 +464,27 @@ async function applyChecked() {
   } catch (e) {
     setStatus('applyStatus', e.message, 'error');
   } finally {
+    stopWatching();
     validate();
   }
+}
+
+// Shows which step PlanSwift is on while a rename or restore runs.
+function watchProgress() {
+  let stopped = false;
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const p = await api('/api/progress');
+      if (p.running && !stopped) {
+        const count = p.phase === 'renaming pages' ? ` (${p.done} of ${p.total})` : '';
+        setStatus('applyStatus', `PlanSwift: ${p.phase}${count}… ${p.seconds} s`);
+      }
+    } catch { /* keep the last message */ }
+    if (!stopped) setTimeout(tick, 1000);
+  };
+  setTimeout(tick, 800);
+  return () => { stopped = true; };
 }
 
 function showRunProblem(run) {
@@ -566,6 +586,7 @@ async function loadHistory() {
           el('span', { class: 'grow' }),
           undo),
         run.error ? el('div', { class: 'warn', text: run.error }) : null,
+        (run.timings || []).length ? el('div', { class: 'muted', text: 'Steps: ' + run.timings.map((t) => `${t.phase} ${t.ms === null ? '(did not finish)' : (t.ms / 1000).toFixed(1) + ' s'}`).join(' · ') }) : null,
         el('details', {}, el('summary', { text: 'Pages' }),
           el('ul', {}, run.changes.map((c) => el('li', { text: `${c.oldName} → ${c.newName} (${c.status}${c.currentName !== c.newName && c.currentName !== c.oldName ? `, now "${c.currentName}"` : ''})` }))))));
     }
@@ -586,7 +607,9 @@ async function restorePreview(body) {
       el('ul', {}, skip.map((i) => el('li', { text: `${i.currentName}: ${i.reason}` }))));
     const ok = await openDialog({ title: plan.title, body: content, ok: restore.length ? `Restore ${restore.length} name(s)` : null, cancel: 'Cancel' });
     if (!ok) return;
-    const out = await post('/api/restore/apply', { planId: plan.planId });
+    const stopWatching = watchProgress();
+    let out;
+    try { out = await post('/api/restore/apply', { planId: plan.planId }); } finally { stopWatching(); }
     if (!out.ok) showRunProblem(out.run);
     else setStatus('applyStatus', `Restored ${out.run.changes.length} page name(s).`, 'success');
     await loadJob();

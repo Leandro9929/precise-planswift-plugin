@@ -48,7 +48,8 @@ test('bridge scripts', { skip: !powershell && 'PowerShell not available', timeou
     ], { label: 'Test' });
     assert.equal(out.report.ok, true, out.error);
     assert.deepEqual(out.report.results.map((r) => r.status), ['renamed', 'renamed']);
-    assert.deepEqual(out.progress.map((p) => p.name), ['A1.1 - PLAN', 'A9 – Ünïcode']);
+    assert.deepEqual(out.progress.filter((p) => p.id).map((p) => p.name), ['A1.1 - PLAN', 'A9 – Ünïcode']);
+    assert.deepEqual(out.progress.filter((p) => p.phase).map((p) => p.phase).slice(0, 2), ['connecting to PlanSwift', 'finding the pages in the open job']);
     assert.deepEqual(names(), ['A1.1 - PLAN', 'Page 2', 'Page 3', 'A9 – Ünïcode']);
     const calls = fs.readFileSync(log, 'utf8').trim().split('\n');
     assert.equal(calls[0], 'NewChangeGroup Test');
@@ -95,6 +96,36 @@ test('bridge scripts', { skip: !powershell && 'PowerShell not available', timeou
     assert.match(unsafe.error, /cannot store/);
     const dup = await bridge.apply([{ id: ids[1], oldName: 'Page 2', newName: 'Same' }, { id: ids[2], oldName: 'Page 3', newName: 'same' }]);
     assert.match(dup.error, /both be named/);
+  });
+
+  await t.test('takeoff checks stay within their time limit on a large, slow job', async () => {
+    Object.assign(process.env, { PRECISE_MOCK_TAKEOFF_ITEMS: '3000', PRECISE_MOCK_QTY_DELAY_MS: '5' });
+    const started = Date.now();
+    try {
+      const out = await bridge.apply([{ id: ids[1], oldName: 'Page 2', newName: 'B2' }], { takeoffSeconds: 2 });
+      assert.equal(out.report.ok, true, out.error);
+      assert.equal(out.report.takeoffComplete, false);
+      assert.ok(out.report.takeoffItems > 10);
+      assert.ok(out.report.timings.some((s) => s.phase === 'reading takeoff quantities'));
+    } finally {
+      delete process.env.PRECISE_MOCK_TAKEOFF_ITEMS;
+      delete process.env.PRECISE_MOCK_QTY_DELAY_MS;
+    }
+    assert.ok(Date.now() - started < 30000, `took ${Date.now() - started} ms`);
+    await bridge.apply([{ id: ids[1], oldName: 'B2', newName: 'Page 2' }]);
+  });
+
+  await t.test('a PlanSwift that stops answering is reported with the step it stopped in', async () => {
+    Object.assign(process.env, { PRECISE_MOCK_HANG_ON: 'NewChangeGroup', PRECISE_APPLY_TIMEOUT_MS: '10000' });
+    try {
+      const out = await bridge.apply([{ id: ids[1], oldName: 'Page 2', newName: 'B2' }]);
+      assert.equal(out.report, null);
+      assert.match(out.error, /did not answer within 10 seconds\. It stopped while starting the PlanSwift change group\./);
+      assert.equal(names()[1], 'Page 2');
+    } finally {
+      delete process.env.PRECISE_MOCK_HANG_ON;
+      delete process.env.PRECISE_APPLY_TIMEOUT_MS;
+    }
   });
 
   await t.test('probe reports a match between COM and the job folder', async () => {

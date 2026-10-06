@@ -17,6 +17,12 @@ function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
 }
 
+// Step durations from the progress markers, for runs cut short before the bridge reported.
+function phaseTimings(progress) {
+  const phases = (progress || []).filter((l) => l && l.phase);
+  return phases.map((p, i) => ({ phase: p.phase, ms: i + 1 < phases.length ? phases[i + 1].ms - p.ms : null }));
+}
+
 function jobKey(manifest) {
   const guid = String(manifest.jobGuid || '').replace(/[^0-9A-Za-z-]/g, '');
   if (guid) return `job-${guid.toUpperCase()}`;
@@ -98,8 +104,9 @@ class Store {
     else if (changed.length) run.status = 'partial';
     else run.status = report.rolledBack ? 'rolled-back' : 'failed';
     run.error = report && report.ok ? '' : (error || 'PlanSwift did not confirm the changes.');
+    run.timings = (report && report.timings) || phaseTimings(progress);
     run.checks = report ? {
-      connection: report.connection, propertyChanges: report.propertyChanges || [],
+      connection: report.connection, propertyChanges: report.propertyChanges || [], propertyPages: report.propertyPages || 0,
       takeoffChanges: report.takeoffChanges || [], takeoffItems: report.takeoffItems || 0,
       takeoffComplete: !!report.takeoffComplete
     } : null;

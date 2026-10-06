@@ -134,14 +134,15 @@ function Get-JobPagesItem($App) {
 }
 
 # Depth- and size-bounded walk used when GetItemByGUID is unavailable or ambiguous.
-function Find-ItemsByGuid($Start, [string[]]$Guids, [int]$MaxDepth = 4, [int]$MaxNodes = 20000) {
+function Find-ItemsByGuid($Start, [string[]]$Guids, [int]$MaxDepth = 4, [int]$MaxNodes = 20000, [double]$Seconds = 30) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
   $wanted = @{}
   foreach ($g in $Guids) { $wanted[(Format-Guid $g)] = $true }
   $found = @{}
   $queue = New-Object System.Collections.Queue
   $queue.Enqueue(@($Start, 0))
   $visited = 0
-  while ($queue.Count -and $found.Count -lt $wanted.Count -and $visited -lt $MaxNodes) {
+  while ($queue.Count -and $found.Count -lt $wanted.Count -and $visited -lt $MaxNodes -and $clock.Elapsed.TotalSeconds -lt $Seconds) {
     $entry = $queue.Dequeue()
     $node = $entry[0]
     $depth = $entry[1]
@@ -182,7 +183,7 @@ function Resolve-Pages($PagesInfo, [string[]]$Guids) {
 # Property names whose value may legitimately follow the page name.
 $script:NameLinked = '^(Name|Caption|Title|Description|FullName|FullPath|Path|DisplayName)$|Date|Time|Modified|Changed|Updated'
 
-function Get-PropertySnapshot($Item, [int]$Max = 400) {
+function Get-PropertySnapshot($Item, [int]$Max = 150) {
   $snapshot = [ordered]@{}
   $count = [int](Com-TryGet $Item 'PropertyCount' @() 0)
   for ($i = 0; $i -lt [Math]::Min($count, $Max); $i++) {
@@ -209,30 +210,54 @@ function Compare-PageSnapshot($Before, $After, [string]$OldName, [string]$NewNam
 }
 
 # Quantity fingerprint of the takeoff tree, so a rename that disturbs measurements is caught.
-function Get-TakeoffFingerprint($App, [string]$RootPath, [int]$MaxDepth = 6, [int]$MaxNodes = 4000) {
+# Bounded by depth, item count and time: reading a quantity can make PlanSwift recalculate, which is
+# slow on large jobs. The items read are kept so the after-check re-reads exactly the same ones.
+function Get-TakeoffFingerprint($App, [string]$RootPath, [int]$MaxDepth = 3, [int]$MaxNodes = 400, [double]$Seconds = 15) {
   $map = @{}
+  $nodes = @{}
+  $clock = [Diagnostics.Stopwatch]::StartNew()
   $takeoff = Com-TryGet $App 'GetItem' @($RootPath + '\Job\Takeoff')
-  if ($null -eq $takeoff) { return [pscustomobject]@{ Items = $map; Complete = $false } }
+  if ($null -eq $takeoff) { return [pscustomobject]@{ Items = $map; Nodes = $nodes; Complete = $false } }
   $queue = New-Object System.Collections.Queue
   $queue.Enqueue(@($takeoff, 0))
   $visited = 0
-  while ($queue.Count -and $visited -lt $MaxNodes) {
+  $stopped = $false
+  while ($queue.Count -and -not $stopped) {
     $entry = $queue.Dequeue()
     $node = $entry[0]
     $depth = $entry[1]
     $count = [int](Com-TryGet $node 'ChildCount' @() 0)
-    for ($i = 0; $i -lt $count -and $visited -lt $MaxNodes; $i++) {
+    for ($i = 0; $i -lt $count; $i++) {
+      if ($visited -ge $MaxNodes -or $clock.Elapsed.TotalSeconds -ge $Seconds) { $stopped = $true; break }
       $child = Com-TryGet $node 'ChildItem' @($i)
       if ($null -eq $child) { continue }
       $visited++
       $guid = [string](Com-TryGet $child 'GUID' @() '')
-      $qty = [string](Com-TryGet $child 'GetPropertyResultAsString' @('Qty', '') '')
-      $children = [int](Com-TryGet $child 'ChildCount' @() 0)
-      if ($guid) { $map[$guid] = "$qty|$children" }
+      if ($guid) {
+        $map[$guid] = Read-TakeoffValue $child
+        $nodes[$guid] = $child
+      }
       if ($depth + 1 -lt $MaxDepth) { $queue.Enqueue(@($child, ($depth + 1))) }
     }
   }
-  return [pscustomobject]@{ Items = $map; Complete = ($queue.Count -eq 0) }
+  return [pscustomobject]@{ Items = $map; Nodes = $nodes; Complete = (-not $stopped -and $queue.Count -eq 0) }
+}
+
+function Read-TakeoffValue($Item) {
+  $qty = [string](Com-TryGet $Item 'GetPropertyResultAsString' @('Qty', '') '')
+  $children = [int](Com-TryGet $Item 'ChildCount' @() 0)
+  return "$qty|$children"
+}
+
+# Re-reads the items fingerprinted before (no new walk), within a time limit.
+function Get-TakeoffRecheck($Before, [double]$Seconds = 30) {
+  $map = @{}
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  foreach ($guid in $Before.Nodes.Keys) {
+    if ($clock.Elapsed.TotalSeconds -ge $Seconds) { break }
+    $map[$guid] = Read-TakeoffValue $Before.Nodes[$guid]
+  }
+  return [pscustomobject]@{ Items = $map; Nodes = $Before.Nodes; Complete = ($map.Count -eq $Before.Items.Count) }
 }
 
 function Compare-Fingerprint($Before, $After) {

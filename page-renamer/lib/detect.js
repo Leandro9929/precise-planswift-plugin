@@ -19,6 +19,8 @@ const TITLE_LABEL = /\b(SHEET|DRAWING|DWG)\s*(TITLE|NAME|DESCRIPTION)\b|^TITLE[:
 const OTHER_LABEL = /\b(PROJECT|JOB|CLIENT|OWNER|ARCHITECT|ENGINEER|CONSULTANT|ADDRESS|DATE|SCALE|DRAWN|CHECKED|APPROVED|DESIGNED|REVISION|REVISIONS|REV|ISSUE|ISSUED|SEAL|STAMP|PHASE|FILE|PLOT|PERMIT|NORTH|KEY ?PLAN|COPYRIGHT|SUBMITTAL|BID|CONSTRUCTION|SET|NOT FOR)\b/i;
 // Issue stamps printed in title blocks; never a sheet title.
 const STATUS = /^(?:(?:CHECK|PERMIT|BID|PROGRESS|REVIEW|ISSUE|PRICING|CONSTRUCTION|CD|DD|SD)\s+SET|PERMIT|RE-?SUBMISSION|(?:NOT\s+)?FOR\s+(?:CONSTRUCTION|PERMIT|REVIEW|BID|PRICING)|PRELIMINARY|DRAFT|ISSUED\s+FOR\b.*|PERMIT\s+RE-?SUBMISSION|CHECK|SET)$/i;
+// Drawing notes and instructions ("PROVIDE JUNCTION BOX FOR ...") are not sheet titles.
+const NOTE_TEXT = /^(?:PROVIDE|VERIFY|SEE|ALL|NOTE|NOTES|CONTRACTOR|INSTALL|REFER|CONFIRM|COORDINATE|TYP\b|U\.?N\.?O|WHERE|DO NOT|FIELD|EXISTING TO|MATCH|ALIGN|EQ\b)/i;
 const NOISE_TITLE = /^(?:[\d\s./\-:'"=]+|.*\b(?:SCALE|DATE|DRAWN|CHECKED|PROJECT|JOB|COPYRIGHT|REVISION|PHONE|FAX|EMAIL|WWW\.|SUITE|STREET|AVENUE|AVE\.?|BLVD|ROAD|RD\.?|INC\.?|LLC|SEAL)\b.*)$/i;
 
 function union(boxes) {
@@ -151,7 +153,7 @@ function lineConfidence(line) {
 function usableTitleLine(line, number, relaxed = false) {
   const text = clean(line.text);
   if (!text || text.length < 3) return false;
-  if (NOISE_TITLE.test(text) || STATUS.test(text) || (!relaxed && isLabelLine(line))) return false;
+  if (NOISE_TITLE.test(text) || STATUS.test(text) || NOTE_TEXT.test(text) || (!relaxed && isLabelLine(line))) return false;
   if (!relaxed && line.words.every((w) => NUMBER_LABEL.test(w.text))) return false;
   if (number && line.words.some((w) => w.box === number.box || normalizeNumber(w.text).number === number.number)) return false;
   const letters = (text.match(/[A-Za-z]/g) || []).length;
@@ -232,8 +234,8 @@ function pickTitle(lines, number, aspect = 1) {
   // 4. Largest descriptive text close to the sheet number.
   const nearPool = readable.length ? readable : usable;
   const near = nearPool.filter((line) => (!number || (
-    Math.abs(line.box.x + line.box.w / 2 - (number.box.x + number.box.w / 2)) < 0.3
-    && Math.abs(line.box.y - number.box.y) < 0.3)));
+    Math.abs(line.box.x + line.box.w / 2 - (number.box.x + number.box.w / 2)) < 0.2
+    && Math.abs(line.box.y - number.box.y) < 0.25)));
   if (!near.length) return { path: 'none', lines: [] };
   const tallest = Math.max(...near.map((line) => line.box.h));
   const big = near.filter((line) => line.box.h >= tallest * 0.75);

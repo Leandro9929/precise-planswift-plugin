@@ -8,6 +8,9 @@
 #   PRECISE_MOCK_MUTATE_ON Changing a page to this name also changes its Scale property
 #   PRECISE_MOCK_QTY_ON    Changing a page to this name changes a takeoff quantity
 #   PRECISE_MOCK_LOG       File that receives one line per COM call that changes state
+#   PRECISE_MOCK_TAKEOFF_ITEMS  Extra takeoff items to create (large jobs)
+#   PRECISE_MOCK_QTY_DELAY_MS   Delay for every Qty read (PlanSwift recalculating)
+#   PRECISE_MOCK_HANG_ON        Name of a COM method that never returns (e.g. NewChangeGroup)
 if (-not ('PreciseMock.App' -as [type])) {
   # Windows PowerShell 5.1 does not reference System.Xml by default; PowerShell 7 does.
   $references = @{}
@@ -63,6 +66,8 @@ namespace PreciseMock {
     public int PropertyCount() { return Props.Count; }
     public Prop PropertyItem(int index) { return Props[index]; }
     public string GetPropertyResultAsString(string property, string fallback) {
+      int delay;
+      if (property == "Qty" && int.TryParse(Env("PRECISE_MOCK_QTY_DELAY_MS"), out delay)) System.Threading.Thread.Sleep(delay);
       foreach (Prop p in Props) if (p.Name == property) return p.Value;
       return fallback;
     }
@@ -105,6 +110,11 @@ namespace PreciseMock {
       section.SetProp("Qty", "125.5");
       Item floor = TakeoffItem.Add(new Item("Floor", "T2", "Area"));
       floor.SetProp("Qty", "860");
+      int extra;
+      if (int.TryParse(Environment.GetEnvironmentVariable("PRECISE_MOCK_TAKEOFF_ITEMS"), out extra)) {
+        Item folder = TakeoffItem.Add(new Item("More", "T3", "Folder"));
+        for (int i = 0; i < extra; i++) folder.Add(new Item("Item " + i, "TX" + i, "Count")).SetProp("Qty", i.ToString());
+      }
     }
 
     void Load(Item parent, string dir) {
@@ -138,7 +148,11 @@ namespace PreciseMock {
       }
       return node;
     }
-    public void NewChangeGroup(string groupName) { ChangeGroups++; Log("NewChangeGroup " + groupName); }
+    public void NewChangeGroup(string groupName) {
+      if (Environment.GetEnvironmentVariable("PRECISE_MOCK_HANG_ON") == "NewChangeGroup") System.Threading.Thread.Sleep(600000);
+      ChangeGroups++;
+      Log("NewChangeGroup " + groupName);
+    }
     public void PostChanges() { Posts++; Log("PostChanges"); }
     public void BumpQuantity() { TakeoffItem.Children[1].SetProp("Qty", "0"); }
 

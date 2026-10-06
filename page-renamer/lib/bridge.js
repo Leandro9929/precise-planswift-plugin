@@ -65,8 +65,12 @@ class Bridge {
 
   async manifest(planSwiftRoot, { liveNames = true } = {}) {
     const args = planSwiftRoot ? ['-PlanSwiftRoot', planSwiftRoot] : [];
-    if (liveNames) args.push('-LiveNames');
-    const { report, error } = await this.run('manifest.ps1', args, 60000);
+    let { report, error } = await this.run('manifest.ps1', liveNames ? [...args, '-LiveNames'] : args, liveNames ? 45000 : 60000);
+    if (!report && liveNames) {
+      // PlanSwift did not answer the live name check; the job folder alone still lists the pages.
+      ({ report, error } = await this.run('manifest.ps1', args, 60000));
+      if (report && report.ok) report.liveError = 'PlanSwift did not answer within 45 seconds';
+    }
     if (!report || !report.ok) throw Error((report && report.error) || error || 'PlanSwift job could not be read.');
     report.pages = Array.isArray(report.pages) ? report.pages : (report.pages ? [report.pages] : []);
     return report;
@@ -74,19 +78,44 @@ class Bridge {
 
   // entries: [{ id, oldName, newName }]. Returns { report, progress, error } where progress is
   // the list of page names PlanSwift confirmed, available even if the script was cut short.
-  async apply(entries, { label, checkTakeoff = true } = {}) {
+  async apply(entries, { label, checkTakeoff = true, takeoffSeconds = 15 } = {}) {
     const base = this.temp('apply');
     const requestFile = base + '.request.json';
     const progressFile = base + '.progress.jsonl';
-    fs.writeFileSync(requestFile, JSON.stringify({ label, checkTakeoff, entries }), 'utf8');
-    const timeout = Math.min(15 * 60000, 90000 + entries.length * 3000);
+    fs.writeFileSync(requestFile, JSON.stringify({ label, checkTakeoff, takeoffSeconds, entries }), 'utf8');
+    this.current = { progressFile, total: entries.length, started: Date.now() };
+    const timeout = Number(process.env.PRECISE_APPLY_TIMEOUT_MS) || Math.min(15 * 60000, 120000 + entries.length * 4000);
     try {
       const { report, error } = await this.run('apply.ps1', ['-InputFile', requestFile, '-ProgressFile', progressFile], timeout);
-      return { report, progress: readLines(progressFile), error: (report && report.error) || error };
+      const progress = readLines(progressFile);
+      let message = (report && report.error) || error;
+      if (!report) {
+        // Name the step PlanSwift stopped answering in, and how far the renaming got.
+        const phases = progress.filter((l) => l.phase);
+        const renamed = progress.filter((l) => l.id).length;
+        const last = phases[phases.length - 1];
+        if (last) message += ` It stopped while ${last.phase}${last.phase === 'renaming pages' ? ` (${renamed} of ${entries.length} done)` : ''}.`;
+      }
+      return { report, progress, error: message };
     } finally {
+      this.current = null;
       fs.rmSync(requestFile, { force: true });
       fs.rmSync(progressFile, { force: true });
     }
+  }
+
+  // Live view of a running rename: current step and pages done so far.
+  progress() {
+    if (!this.current) return { running: false };
+    const lines = readLines(this.current.progressFile);
+    const phases = lines.filter((l) => l.phase);
+    return {
+      running: true,
+      phase: phases.length ? phases[phases.length - 1].phase : 'starting PowerShell',
+      done: lines.filter((l) => l.id).length,
+      total: this.current.total,
+      seconds: Math.round((Date.now() - this.current.started) / 1000)
+    };
   }
 
   async probe(pages) {

@@ -14,7 +14,7 @@ Open a Command Prompt in the extracted `page-renamer` folder and run:
 node --test test\bridge.test.js
 ```
 
-Expected: `# pass 11`, `# fail 0`. This runs the real bridge scripts in 32-bit Windows PowerShell 5.1 against a simulated PlanSwift, including UTF-8 names and every rollback path.
+Expected: `# pass 13`, `# fail 0`. This runs the real bridge scripts in 32-bit Windows PowerShell 5.1 against a simulated PlanSwift, including UTF-8 names and every rollback path.
 
 **A2. Job list and previews**
 
@@ -38,7 +38,8 @@ Expected, every line ✓:
 | Open job | job name and its Pages path |
 | Match job folder | N of N pages matched by ID and name |
 | Page properties | a number of properties; open "Properties of the first page" and check the scale property is listed |
-| Takeoff check | number of takeoff items fingerprinted |
+| PlanSwift response | a few ms per request (over 100 ms makes renaming slow) |
+| Takeoff check | number of takeoff items read and the seconds it took |
 
 Also confirm in Task Manager that only one PlanSwift is running afterwards.
 
@@ -60,7 +61,7 @@ Create a small test job in PlanSwift: import a 3–5 page plan set, set the scal
 **B1. Rename**
 
 1. Read the sheets, check two or three rows, click **Rename checked pages in PlanSwift**.
-2. Expected: "Renamed N page(s)". In PlanSwift's Pages list the new names appear (note whether they appear immediately or only after clicking another page / reopening the job).
+2. Expected: while it runs, the status shows each step ("PlanSwift: renaming pages (3 of 30)…"); then "Renamed N page(s)". History lists how long each step took. In PlanSwift's Pages list the new names appear (note whether they appear immediately or only after clicking another page / reopening the job).
 3. Expected: each renamed page still opens with its drawing, the same scale, and the same takeoff shown on it; takeoff totals unchanged.
 4. Note what PlanSwift's own Undo (Ctrl+Z) does right after the rename (whether it reverts the names as one step). Redo it if it reverted.
 
